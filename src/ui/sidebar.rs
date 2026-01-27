@@ -1,5 +1,7 @@
 use gpui::{prelude::*, *};
 
+use crate::ui::tooltip::Tooltip;
+
 /// Size of the resize handle in pixels
 const RESIZE_HANDLE_SIZE: f32 = 6.0;
 
@@ -19,6 +21,90 @@ pub struct DraggedSidebar;
 impl Render for DraggedSidebar {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         Empty
+    }
+}
+
+/// A toolbar icon button
+#[derive(IntoElement)]
+struct ToolbarButton {
+    id: &'static str,
+    icon_path: &'static str,
+    tooltip_text: &'static str,
+}
+
+impl ToolbarButton {
+    fn new(id: &'static str, icon_path: &'static str, tooltip_text: &'static str) -> Self {
+        Self {
+            id,
+            icon_path,
+            tooltip_text,
+        }
+    }
+}
+
+impl RenderOnce for ToolbarButton {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let icon_color = rgb(0x858585);
+        let icon_hover_color = rgb(0xcccccc);
+        let bg_hover = rgba(0xffffff11);
+
+        div()
+            .id(self.id)
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w(px(26.0))
+            .h(px(22.0))
+            .rounded_md()
+            .hover(|style| style.bg(bg_hover))
+            .active(|style| style.bg(rgba(0xffffff08)))
+            .child(
+                svg()
+                    .path(self.icon_path)
+                    .size(px(16.0))
+                    .text_color(icon_color)
+                    .hover(|style| style.text_color(icon_hover_color)),
+            )
+            .tooltip(Tooltip::text(self.tooltip_text))
+    }
+}
+
+/// The toolbar row at the top of the sidebar
+#[derive(IntoElement)]
+struct SidebarToolbar;
+
+impl RenderOnce for SidebarToolbar {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let border_color = rgb(0x3d3d3d);
+
+        div()
+            .id("sidebar-toolbar")
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .h(px(34.0))
+            .px(px(8.0))
+            .gap(px(2.0))
+            .border_b_1()
+            .border_color(border_color)
+            // Left-aligned buttons
+            .child(ToolbarButton::new(
+                "add-connection",
+                "icons/plus.svg",
+                "Add new connection",
+            ))
+            .child(ToolbarButton::new(
+                "refresh-connections",
+                "icons/refresh.svg",
+                "Refresh connections",
+            ))
+            .child(ToolbarButton::new(
+                "filter-connections",
+                "icons/filter.svg",
+                "Filter connections",
+            ))
     }
 }
 
@@ -68,20 +154,15 @@ impl Render for Sidebar {
                     .bg(sidebar_bg)
                     .border_r_1()
                     .border_color(border_color)
-                    // Empty sidebar content - placeholder for future panels
+                    // Toolbar row at top
+                    .child(SidebarToolbar)
+                    // Content area - placeholder for future panels
                     .child(
                         div()
+                            .id("sidebar-content")
                             .flex_1()
                             .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_color(rgb(0x6e6e6e))
-                                    .text_size(px(12.0))
-                                    .child("Sidebar"),
-                            ),
+                            .overflow_hidden(),
                     ),
             )
             // Resize handle
