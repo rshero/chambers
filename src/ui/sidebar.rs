@@ -1,8 +1,9 @@
 use gpui::{prelude::*, *};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use crate::db::DatabaseType;
+use crate::db::{Connection, ConnectionStorage, DatabaseType};
 use crate::ui::database_menu::{DatabaseMenu, DatabaseSelected};
 use crate::ui::tooltip::Tooltip;
 
@@ -83,14 +84,25 @@ impl RenderOnce for ToolbarButton {
 pub struct Sidebar {
     width: Pixels,
     database_menu: Rc<RefCell<Option<Entity<DatabaseMenu>>>>,
+    storage: Arc<ConnectionStorage>,
+    connections: Vec<Connection>,
+    expanded_connections: std::collections::HashSet<String>,
 }
 
 impl Sidebar {
-    pub fn new() -> Self {
+    pub fn new(storage: Arc<ConnectionStorage>) -> Self {
+        let connections = storage.get_all().unwrap_or_default();
         Self {
             width: px(DEFAULT_SIDEBAR_WIDTH),
             database_menu: Rc::new(RefCell::new(None)),
+            storage,
+            connections,
+            expanded_connections: std::collections::HashSet::new(),
         }
+    }
+
+    pub fn refresh_connections(&mut self, _cx: &mut Context<Self>) {
+        self.connections = self.storage.get_all().unwrap_or_default();
     }
 
     pub fn set_width(&mut self, width: Pixels) {
@@ -192,6 +204,121 @@ impl Sidebar {
                 "Filter connections",
             ))
     }
+
+    fn toggle_connection(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.expanded_connections.contains(id) {
+            self.expanded_connections.remove(id);
+        } else {
+            self.expanded_connections.insert(id.to_string());
+        }
+        cx.notify();
+    }
+
+    fn render_connections(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let hover_bg = rgb(0x252525);
+        let text_color = rgb(0xe0e0e0);
+        let text_muted = rgb(0x808080);
+
+        div()
+            .id("connections-list")
+            .flex_1()
+            .w_full()
+            .overflow_y_scroll()
+            .py(px(4.0))
+            .children(self.connections.iter().map(|conn| {
+                let conn_id = conn.id.clone();
+                let conn_name = conn.name.clone();
+                let db_type = conn.db_type;
+                let is_expanded = self.expanded_connections.contains(&conn.id);
+
+                div()
+                    .id(SharedString::from(format!("conn-{}", conn_id)))
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    // Connection row
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("conn-row-{}", conn_id)))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .w_full()
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .cursor_pointer()
+                            .rounded(px(4.0))
+                            .hover(|s| s.bg(hover_bg))
+                            .on_click(cx.listener({
+                                let id = conn_id.clone();
+                                move |this, _, _, cx| {
+                                    this.toggle_connection(&id, cx);
+                                }
+                            }))
+                            // Collapse/expand chevron
+                            .child(
+                                svg()
+                                    .path(if is_expanded {
+                                        "icons/chevron-down.svg"
+                                    } else {
+                                        "icons/chevron-right.svg"
+                                    })
+                                    .size(px(12.0))
+                                    .text_color(text_muted)
+                                    .flex_none(),
+                            )
+                            // Database icon
+                            .child(img(db_type.icon_path()).size(px(16.0)).flex_none())
+                            // Connection name
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(13.0))
+                                    .text_color(text_color)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(conn_name),
+                            ),
+                    )
+                    // Expanded content (placeholder for collections/tables)
+                    .when(is_expanded, |el| {
+                        el.child(
+                            div()
+                                .pl(px(36.0))
+                                .pr(px(8.0))
+                                .py(px(4.0))
+                                .text_size(px(12.0))
+                                .text_color(text_muted)
+                                .child("Connect to browse..."),
+                        )
+                    })
+            }))
+            // Empty state
+            .when(self.connections.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .py(px(32.0))
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(text_muted)
+                                .child("No connections"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgb(0x606060))
+                                .child("Click + to add one"),
+                        ),
+                )
+            })
+    }
 }
 
 impl Render for Sidebar {
@@ -218,14 +345,8 @@ impl Render for Sidebar {
                     .border_color(border_color)
                     // Toolbar row at top
                     .child(self.render_toolbar(cx))
-                    // Content area - placeholder for future panels
-                    .child(
-                        div()
-                            .id("sidebar-content")
-                            .flex_1()
-                            .w_full()
-                            .overflow_hidden(),
-                    ),
+                    // Connections list
+                    .child(self.render_connections(cx)),
             )
             // Resize handle
             .child(

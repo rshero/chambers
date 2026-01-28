@@ -83,7 +83,6 @@ impl ConnectionStorage {
     }
 
     /// Save a connection (insert or update)
-    #[allow(dead_code)]
     pub fn save(&self, connection: &Connection) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

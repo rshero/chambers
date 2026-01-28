@@ -5,10 +5,20 @@ use crate::db::{Connection, ConnectionStorage, DatabaseType};
 use crate::ui::text_input::TextInput;
 use crate::ui::title_bar::TitleBar;
 
+// Tab navigation actions for connection modal
+gpui::actions!(connection_modal, [FocusNextField, FocusPreviousField]);
+
+/// Register key bindings for connection modal
+pub fn register_connection_modal_bindings(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", FocusNextField, Some("ConnectionModal")),
+        KeyBinding::new("shift-tab", FocusPreviousField, Some("ConnectionModal")),
+    ]);
+}
+
 /// The connection configuration window
 pub struct ConnectionModal {
     title_bar: Entity<TitleBar>,
-    #[allow(dead_code)]
     storage: Arc<ConnectionStorage>,
     connections: Vec<Connection>,
     selected_connection_index: Option<usize>,
@@ -57,6 +67,7 @@ impl ConnectionModal {
     fn select_connection(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected_connection_index = Some(index);
         if let Some(conn) = self.connections.get(index) {
+            self.db_type = conn.db_type;
             self.name_input
                 .update(cx, |input, _| input.set_text(&conn.name));
             self.host_input
@@ -74,6 +85,123 @@ impl ConnectionModal {
             });
         }
         cx.notify();
+    }
+
+    fn new_connection(&mut self, cx: &mut Context<Self>) {
+        self.selected_connection_index = None;
+        let conn = Connection::new(self.db_type);
+        self.name_input
+            .update(cx, |input, _| input.set_text(&conn.name));
+        self.host_input
+            .update(cx, |input, _| input.set_text(&conn.host));
+        self.port_input
+            .update(cx, |input, _| input.set_text(&conn.port.to_string()));
+        self.database_input
+            .update(cx, |input, _| input.set_text(""));
+        self.user_input.update(cx, |input, _| input.set_text(""));
+        self.password_input
+            .update(cx, |input, _| input.set_text(""));
+        cx.notify();
+    }
+
+    fn save_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.name_input.read(cx).text();
+        let host = self.host_input.read(cx).text();
+        let port_str = self.port_input.read(cx).text();
+        let database = self.database_input.read(cx).text();
+        let username = self.user_input.read(cx).text();
+        let password = self.password_input.read(cx).text();
+
+        let port: u16 = port_str.parse().unwrap_or(self.db_type.default_port());
+
+        let connection = Connection {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            db_type: self.db_type,
+            host,
+            port,
+            database: if database.is_empty() {
+                None
+            } else {
+                Some(database)
+            },
+            username: if username.is_empty() {
+                None
+            } else {
+                Some(username)
+            },
+            password: if password.is_empty() {
+                None
+            } else {
+                Some(password)
+            },
+        };
+
+        if let Err(e) = self.storage.save(&connection) {
+            eprintln!("Failed to save connection: {}", e);
+        } else {
+            // Refresh connections list
+            self.connections = self.storage.get_all().unwrap_or_default();
+            cx.notify();
+            // Close the window after saving
+            window.remove_window();
+        }
+    }
+
+    fn focus_next_field(
+        &mut self,
+        _: &FocusNextField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let fields = [
+            &self.name_input,
+            &self.host_input,
+            &self.port_input,
+            &self.database_input,
+            &self.user_input,
+            &self.password_input,
+        ];
+
+        let current_idx = fields
+            .iter()
+            .position(|f| f.focus_handle(cx).is_focused(window));
+        let next_idx = match current_idx {
+            Some(idx) => (idx + 1) % fields.len(),
+            None => 0,
+        };
+        fields[next_idx].focus_handle(cx).focus(window);
+    }
+
+    fn focus_previous_field(
+        &mut self,
+        _: &FocusPreviousField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let fields = [
+            &self.name_input,
+            &self.host_input,
+            &self.port_input,
+            &self.database_input,
+            &self.user_input,
+            &self.password_input,
+        ];
+
+        let current_idx = fields
+            .iter()
+            .position(|f| f.focus_handle(cx).is_focused(window));
+        let prev_idx = match current_idx {
+            Some(idx) => {
+                if idx == 0 {
+                    fields.len() - 1
+                } else {
+                    idx - 1
+                }
+            }
+            None => fields.len() - 1,
+        };
+        fields[prev_idx].focus_handle(cx).focus(window);
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -153,6 +281,43 @@ impl ConnectionModal {
                         )
                     }),
             )
+            // New Connection button at bottom
+            .child(
+                div()
+                    .id("new-connection-btn")
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .border_t_1()
+                    .border_color(border_color)
+                    .child(
+                        div()
+                            .id("new-conn-inner")
+                            .cursor_pointer()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(10.0))
+                            .py(px(8.0))
+                            .rounded_md()
+                            .hover(|s| s.bg(hover_bg))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.new_connection(cx);
+                            }))
+                            .child(
+                                svg()
+                                    .path("icons/plus.svg")
+                                    .size(px(14.0))
+                                    .text_color(rgb(0x0078d4)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .text_color(rgb(0x0078d4))
+                                    .child("New Connection"),
+                            ),
+                    ),
+            )
     }
 
     fn render_form_field(label: &str, input: Entity<TextInput>) -> impl IntoElement {
@@ -170,7 +335,7 @@ impl ConnectionModal {
             .child(input)
     }
 
-    fn render_content(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let content_bg = rgb(0x1a1a1a);
         let border_color = rgb(0x2a2a2a);
 
@@ -273,42 +438,42 @@ impl ConnectionModal {
                             .flex()
                             .flex_row()
                             .gap(px(10.0))
-                            .child(Self::render_button("Cancel", false))
-                            .child(Self::render_button("Save", true)),
+                            .child(
+                                div()
+                                    .id("cancel-btn")
+                                    .cursor_pointer()
+                                    .px(px(18.0))
+                                    .py(px(8.0))
+                                    .bg(rgb(0x333333))
+                                    .rounded_md()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(0xffffff))
+                                    .hover(|s| s.bg(rgb(0x404040)))
+                                    .on_click(|_, window, _cx| {
+                                        window.remove_window();
+                                    })
+                                    .child("Cancel"),
+                            )
+                            .child(
+                                div()
+                                    .id("save-btn")
+                                    .cursor_pointer()
+                                    .px(px(18.0))
+                                    .py(px(8.0))
+                                    .bg(rgb(0x0078d4))
+                                    .rounded_md()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(0xffffff))
+                                    .hover(|s| s.bg(rgb(0x1a8cff)))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_connection(window, cx);
+                                    }))
+                                    .child("Save"),
+                            ),
                     ),
             )
-    }
-
-    fn render_button(label: &'static str, is_primary: bool) -> impl IntoElement {
-        let bg = if is_primary {
-            rgb(0x0078d4)
-        } else {
-            rgb(0x333333)
-        };
-        let hover_bg = if is_primary {
-            rgb(0x1a8cff)
-        } else {
-            rgb(0x404040)
-        };
-
-        div()
-            .id(label)
-            .cursor_pointer()
-            .px(px(18.0))
-            .py(px(8.0))
-            .bg(bg)
-            .rounded_md()
-            .text_size(px(13.0))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(rgb(0xffffff))
-            .hover(|s| s.bg(hover_bg))
-            .on_click(move |_, window, _cx| {
-                if label == "Cancel" {
-                    window.remove_window();
-                }
-                // TODO: Save logic for "Save" button
-            })
-            .child(label)
     }
 }
 
@@ -318,6 +483,9 @@ impl Render for ConnectionModal {
 
         div()
             .id("connection-modal")
+            .key_context("ConnectionModal")
+            .on_action(cx.listener(Self::focus_next_field))
+            .on_action(cx.listener(Self::focus_previous_field))
             .size_full()
             .flex()
             .flex_col()

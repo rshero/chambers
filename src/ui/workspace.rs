@@ -20,7 +20,7 @@ impl ChambersWorkspace {
             Arc::new(ConnectionStorage::new().expect("Failed to initialize connection storage"));
 
         let title_bar = cx.new(|_| TitleBar::new());
-        let sidebar = cx.new(|_| Sidebar::new());
+        let sidebar = cx.new(|_| Sidebar::new(storage.clone()));
 
         // Subscribe to sidebar events
         cx.subscribe(
@@ -80,12 +80,19 @@ impl ChambersWorkspace {
 }
 
 impl Render for ChambersWorkspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Handle pending modal open - open in new window
         if let Some(db_type) = self.pending_db_type.take() {
             let storage = self.storage.clone();
             cx.defer(move |cx| {
                 Self::open_connection_window(db_type, storage, cx);
+            });
+        }
+
+        // Refresh sidebar connections when window is active (catches modal close)
+        if window.is_window_active() {
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.refresh_connections(cx);
             });
         }
 
