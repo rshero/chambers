@@ -27,6 +27,7 @@ impl WindowControlType {
 pub struct WindowControlButton {
     control_type: WindowControlType,
     is_close: bool,
+    is_modal: bool,
 }
 
 impl WindowControlButton {
@@ -34,6 +35,15 @@ impl WindowControlButton {
         Self {
             control_type,
             is_close: matches!(control_type, WindowControlType::Close),
+            is_modal: false,
+        }
+    }
+
+    pub fn modal(control_type: WindowControlType) -> Self {
+        Self {
+            control_type,
+            is_close: matches!(control_type, WindowControlType::Close),
+            is_modal: true,
         }
     }
 }
@@ -42,6 +52,7 @@ impl RenderOnce for WindowControlButton {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let control_type = self.control_type;
         let is_close = self.is_close;
+        let is_modal = self.is_modal;
 
         let id: &'static str = match control_type {
             WindowControlType::Minimize => "window-control-minimize",
@@ -94,7 +105,13 @@ impl RenderOnce for WindowControlButton {
                     WindowControlType::Maximize | WindowControlType::Restore => {
                         window.zoom_window()
                     }
-                    WindowControlType::Close => cx.quit(),
+                    WindowControlType::Close => {
+                        if is_modal {
+                            window.remove_window();
+                        } else {
+                            cx.quit();
+                        }
+                    }
                 }
             })
     }
@@ -102,17 +119,24 @@ impl RenderOnce for WindowControlButton {
 
 /// Window controls container (minimize, maximize/restore, close)
 #[derive(IntoElement)]
-pub struct WindowControls;
+pub struct WindowControls {
+    is_modal: bool,
+}
 
 impl WindowControls {
     pub fn new() -> Self {
-        Self
+        Self { is_modal: false }
+    }
+
+    pub fn modal() -> Self {
+        Self { is_modal: true }
     }
 }
 
 impl RenderOnce for WindowControls {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let is_maximized = window.is_maximized();
+        let is_modal = self.is_modal;
 
         div()
             .id("window-controls")
@@ -122,13 +146,29 @@ impl RenderOnce for WindowControls {
             .gap(px(8.0))
             .px(px(12.0))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(WindowControlButton::new(WindowControlType::Minimize))
-            .child(WindowControlButton::new(if is_maximized {
-                WindowControlType::Restore
+            .child(if is_modal {
+                WindowControlButton::modal(WindowControlType::Minimize)
             } else {
-                WindowControlType::Maximize
-            }))
-            .child(WindowControlButton::new(WindowControlType::Close))
+                WindowControlButton::new(WindowControlType::Minimize)
+            })
+            .child(if is_modal {
+                WindowControlButton::modal(if is_maximized {
+                    WindowControlType::Restore
+                } else {
+                    WindowControlType::Maximize
+                })
+            } else {
+                WindowControlButton::new(if is_maximized {
+                    WindowControlType::Restore
+                } else {
+                    WindowControlType::Maximize
+                })
+            })
+            .child(if is_modal {
+                WindowControlButton::modal(WindowControlType::Close)
+            } else {
+                WindowControlButton::new(WindowControlType::Close)
+            })
     }
 }
 
@@ -201,11 +241,26 @@ impl RenderOnce for ProjectName {
 /// The main title bar component
 pub struct TitleBar {
     should_move: bool,
+    title: Option<SharedString>,
+    is_modal: bool,
 }
 
 impl TitleBar {
     pub fn new() -> Self {
-        Self { should_move: false }
+        Self {
+            should_move: false,
+            title: None,
+            is_modal: false,
+        }
+    }
+
+    /// Create a title bar for a modal window (no menu button, custom title, close removes window)
+    pub fn modal(title: impl Into<SharedString>) -> Self {
+        Self {
+            should_move: false,
+            title: Some(title.into()),
+            is_modal: true,
+        }
     }
 
     pub fn height() -> Pixels {
@@ -215,7 +270,10 @@ impl TitleBar {
 
 impl Render for TitleBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title_bar_bg = rgb(0x2d2d2d);
+        let title_bar_bg = rgb(0x1f1f1f);
+        let border_color = rgb(0x333333);
+        let is_modal = self.is_modal;
+        let title = self.title.clone();
 
         div()
             .id("title-bar")
@@ -227,7 +285,7 @@ impl Render for TitleBar {
             .h(Self::height())
             .bg(title_bar_bg)
             .border_b_1()
-            .border_color(rgb(0x3d3d3d))
+            .border_color(border_color)
             // Enable window dragging
             .window_control_area(WindowControlArea::Drag)
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
@@ -257,18 +315,33 @@ impl Render for TitleBar {
                     window.zoom_window();
                 }
             })
-            // Left side: menu button and project name
+            // Left side: menu button and project name (or just title for modal)
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(4.0))
-                    .pl(px(8.0))
-                    .child(MenuButton::new())
-                    .child(ProjectName::new("chambers")),
+                    .gap(px(8.0))
+                    .pl(px(12.0))
+                    .when(!is_modal, |el| {
+                        el.child(MenuButton::new())
+                            .child(ProjectName::new("chambers"))
+                    })
+                    .when_some(title, |el, title| {
+                        el.child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(0xe0e0e0))
+                                .child(title),
+                        )
+                    }),
             )
             // Right side: window controls
-            .child(WindowControls::new())
+            .child(if is_modal {
+                WindowControls::modal()
+            } else {
+                WindowControls::new()
+            })
     }
 }

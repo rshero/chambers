@@ -11,11 +11,11 @@ impl Tooltip {
     }
 
     /// Creates a tooltip builder function for use with `.tooltip()`
-    pub fn text(text: impl Into<SharedString> + Clone + 'static) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    pub fn text(
+        text: impl Into<SharedString> + Clone + 'static,
+    ) -> impl Fn(&mut Window, &mut App) -> AnyView {
         let text = text.into();
-        move |_, cx| {
-            cx.new(|_| Tooltip::new(text.clone())).into()
-        }
+        move |_, cx| cx.new(|_| Tooltip::new(text.clone())).into()
     }
 }
 
