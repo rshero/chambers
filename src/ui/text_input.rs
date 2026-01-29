@@ -114,6 +114,10 @@ impl TextInput {
         self.scroll_offset = px(0.);
     }
 
+    pub fn set_placeholder(&mut self, placeholder: &str) {
+        self.placeholder = placeholder.to_string().into();
+    }
+
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);

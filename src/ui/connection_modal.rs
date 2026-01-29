@@ -79,6 +79,8 @@ pub struct ConnectionModal {
     selected_connection_index: Option<usize>,
     db_type: DatabaseType,
     test_result: TestResult,
+    /// Whether the database type dropdown is currently open
+    db_type_dropdown_open: bool,
     // Form fields
     name_input: Entity<TextInput>,
     host_input: Entity<TextInput>,
@@ -122,6 +124,7 @@ impl ConnectionModal {
             selected_connection_index: None,
             db_type,
             test_result: TestResult::None,
+            db_type_dropdown_open: false,
             name_input,
             host_input,
             port_input,
@@ -135,6 +138,7 @@ impl ConnectionModal {
     fn select_connection(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected_connection_index = Some(index);
         self.test_result = TestResult::None;
+        self.db_type_dropdown_open = false; // Close dropdown when selecting existing connection
         if let Some(conn) = self.connections.get(index) {
             self.db_type = conn.db_type;
             self.name_input
@@ -162,6 +166,7 @@ impl ConnectionModal {
     fn new_connection(&mut self, cx: &mut Context<Self>) {
         self.selected_connection_index = None;
         self.test_result = TestResult::None;
+        self.db_type_dropdown_open = false;
         let conn = Connection::new(self.db_type);
         self.name_input
             .update(cx, |input, _| input.set_text(&conn.name));
@@ -176,6 +181,58 @@ impl ConnectionModal {
             .update(cx, |input, _| input.set_text(""));
         self.connection_string_input
             .update(cx, |input, _| input.set_text(""));
+        cx.notify();
+    }
+
+    /// Change the database type and reset form fields appropriately.
+    /// Only allowed when creating a new connection (not editing existing).
+    fn change_db_type(&mut self, new_type: DatabaseType, cx: &mut Context<Self>) {
+        // Only allow changing type for new connections
+        if self.selected_connection_index.is_some() {
+            return;
+        }
+
+        self.db_type = new_type;
+        self.db_type_dropdown_open = false;
+        self.test_result = TestResult::None;
+
+        // Reset form with new database type defaults
+        let conn = Connection::new(new_type);
+        self.name_input
+            .update(cx, |input, _| input.set_text(&conn.name));
+        self.host_input
+            .update(cx, |input, _| input.set_text(&conn.host));
+        self.port_input
+            .update(cx, |input, _| input.set_text(&conn.port.to_string()));
+        self.database_input
+            .update(cx, |input, _| input.set_text(""));
+        self.user_input.update(cx, |input, _| input.set_text(""));
+        self.password_input
+            .update(cx, |input, _| input.set_text(""));
+
+        // Update connection string placeholder
+        let placeholder = match new_type {
+            DatabaseType::PostgreSQL => "postgresql://user:pass@host:port/db",
+            DatabaseType::MongoDB => "mongodb://user:pass@host:port/db",
+            DatabaseType::Redis => "redis://user:pass@host:port",
+            DatabaseType::MySQL => "mysql://user:pass@host:port/db",
+            DatabaseType::SQLite => "/path/to/database.db",
+        };
+        self.connection_string_input
+            .update(cx, |input, _| input.set_placeholder(placeholder));
+        self.connection_string_input
+            .update(cx, |input, _| input.set_text(""));
+
+        cx.notify();
+    }
+
+    /// Toggle the database type dropdown open/closed
+    fn toggle_db_type_dropdown(&mut self, cx: &mut Context<Self>) {
+        // Only allow toggling for new connections
+        if self.selected_connection_index.is_some() {
+            return;
+        }
+        self.db_type_dropdown_open = !self.db_type_dropdown_open;
         cx.notify();
     }
 
@@ -532,6 +589,130 @@ impl ConnectionModal {
             )
     }
 
+    /// Renders the database type selector in the header.
+    /// Shows current type with icon, clickable dropdown when creating new connection.
+    fn render_db_type_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_new_connection = self.selected_connection_index.is_none();
+        let dropdown_open = self.db_type_dropdown_open;
+        let current_type = self.db_type;
+
+        // Colors
+        let accent_color = rgb(0x0078d4);
+        let normal_text = rgb(0xe0e0e0);
+        let muted_text = rgb(0x808080);
+        
+        // Accent when open, normal when closed (following Zed pattern)
+        let trigger_text_color = if dropdown_open && is_new_connection { accent_color } else { normal_text };
+        let trigger_icon_color = if dropdown_open && is_new_connection { accent_color } else { muted_text };
+        
+        let dropdown_bg = rgb(0x1f1f1f);
+        let dropdown_border = rgb(0x333333);
+        let item_hover_bg = rgb(0x2a2a2a);
+
+        // Chevron icon path based on state
+        let chevron_icon = if dropdown_open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" };
+
+        div()
+            .relative()
+            .child(
+                // Main selector button - simpler, cleaner design
+                div()
+                    .id("db-type-selector")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .when(is_new_connection, |el| {
+                        el.cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_db_type_dropdown(cx);
+                            }))
+                    })
+                    // Database icon
+                    .child(img(current_type.icon_path()).size(px(20.0)).flex_none())
+                    // Database name
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(trigger_text_color)
+                            .child(format!("{} Connection", current_type.name())),
+                    )
+                    // Chevron indicator (only for new connections)
+                    .when(is_new_connection, |el| {
+                        el.child(
+                            svg()
+                                .path(chevron_icon)
+                                .size(px(14.0))
+                                .text_color(trigger_icon_color),
+                        )
+                    }),
+            )
+            // Dropdown menu
+            .when(dropdown_open && is_new_connection, |el| {
+                el.child(
+                    deferred(
+                        div()
+                            .id("db-type-dropdown")
+                            .absolute()
+                            .top(px(28.0))
+                            .left_0()
+                            .min_w(px(220.0))
+                            .bg(dropdown_bg)
+                            .border_1()
+                            .border_color(dropdown_border)
+                            .rounded(px(6.0))
+                            .shadow_lg()
+                            .py(px(4.0))
+                            .occlude()
+                            .children(
+                                DatabaseType::all()
+                                    .iter()
+                                    .map(|db_type| {
+                                        let db_type = *db_type;
+                                        let is_selected = db_type == current_type;
+                                        let selected_bg = rgba(0x0078d430); // accent with transparency
+
+                                        div()
+                                            .id(db_type.name())
+                                            .px(px(12.0))
+                                            .py(px(8.0))
+                                            .mx(px(4.0))
+                                            .rounded(px(4.0))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(10.0))
+                                            .when(is_selected, |el| el.bg(selected_bg))
+                                            .hover(|s| s.bg(item_hover_bg))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.change_db_type(db_type, cx);
+                                            }))
+                                            .child(img(db_type.icon_path()).size(px(18.0)).flex_none())
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .text_size(px(13.0))
+                                                    .text_color(normal_text)
+                                                    .child(db_type.name()),
+                                            )
+                                            .when(is_selected, |el| {
+                                                el.child(
+                                                    div()
+                                                        .text_size(px(12.0))
+                                                        .text_color(accent_color)
+                                                        .child("✓"),
+                                                )
+                                            })
+                                    }),
+                            ),
+                    )
+                    .with_priority(1),
+                )
+            })
+    }
+
     fn render_form_field(label: &str, input: Entity<TextInput>) -> impl IntoElement {
         div()
             .flex()
@@ -676,25 +857,15 @@ impl ConnectionModal {
             .bg(content_bg)
             .flex()
             .flex_col()
-            // Content header with database type
+            // Content header with database type selector
             .child(
                 div()
+                    .relative()
                     .px(px(24.0))
-                    .py(px(14.0))
+                    .py(px(12.0))
                     .border_b_1()
                     .border_color(border_color)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(img(self.db_type.icon_path()).size(px(22.0)).flex_none())
-                    .child(
-                        div()
-                            .text_size(px(15.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(0xe0e0e0))
-                            .child(format!("{} Connection", self.db_type.name())),
-                    ),
+                    .child(self.render_db_type_selector(cx)),
             )
             // Form content
             .child(
