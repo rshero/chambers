@@ -3,12 +3,44 @@ name = "chambers"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["postgres", "mongodb", "redis"]
+full = ["postgres", "mongodb", "redis", "mysql", "sqlite-driver"]
+
+# Database drivers (optional)
+postgres = ["dep:tokio-postgres", "dep:native-tls", "dep:postgres-native-tls"]
+mongodb = ["dep:mongodb"]
+redis = ["dep:redis"]
+mysql = ["dep:mysql_async"]
+sqlite-driver = []  # SQLite as a target database (rusqlite already included for app storage)
+
 [dependencies]
+# GPUI framework
 gpui = { version = "*" }
+
+# Core utilities
 anyhow = "1.0"
+thiserror = "1.0"
 dirs = "5.0"
-rusqlite = { version = "0.31", features = ["bundled"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
 unicode-segmentation = "1.12.0"
+url = "2"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+async-trait = "0.1"
+
+# App storage (always included - for saving connections)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Optional database drivers
+tokio-postgres = { version = "0.7", optional = true }
+native-tls = { version = "0.2", optional = true }
+postgres-native-tls = { version = "0.5", optional = true }
+mongodb = { version = "3", optional = true }
+redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+mysql_async = { version = "0.34", optional = true }

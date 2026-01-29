@@ -1,7 +1,9 @@
 use gpui::{prelude::*, *};
+use std::f32::consts::PI;
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::db::{Connection, ConnectionStorage, DatabaseType};
+use crate::db::{create_connection, Connection, ConnectionConfig, ConnectionStorage, DatabaseType};
 use crate::ui::text_input::TextInput;
 use crate::ui::title_bar::TitleBar;
 
@@ -16,6 +18,59 @@ pub fn register_connection_modal_bindings(cx: &mut App) {
     ]);
 }
 
+/// Test connection result state
+#[derive(Clone)]
+enum TestResult {
+    None,
+    Testing,
+    Success { version: String, latency_ms: u64 },
+    Error(String),
+}
+
+/// A loading spinner component with rotating dots
+/// Uses GPUI's native animation system for smooth 60fps animation
+fn render_loading_spinner(id: impl Into<ElementId>) -> impl IntoElement {
+    let accent_color = rgb(0x0078d4);
+    let dot_count: usize = 3;
+    let dot_size = 6.0_f32;
+    let spacing = 4.0_f32;
+
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(spacing))
+        .children((0..dot_count).map(move |i| {
+            // Each dot pulses with a phase offset for a wave effect
+            let phase_offset = i as f32 * 0.33; // Stagger by 1/3 of the cycle
+            
+            div()
+                .id(("spinner-dot", i))
+                .w(px(dot_size))
+                .h(px(dot_size))
+                .rounded_full()
+                .bg(accent_color)
+                .with_animation(
+                    ("spinner-dot-anim", i),
+                    Animation::new(Duration::from_millis(1200)).repeat(),
+                    move |el, delta| {
+                        // Apply phase offset and create smooth pulsing
+                        let adjusted_delta = (delta + phase_offset) % 1.0;
+                        // Use sine wave for smooth pulsing (0.3 to 1.0 opacity range)
+                        let pulse = ((adjusted_delta * 2.0 * PI).sin() + 1.0) / 2.0;
+                        let opacity = 0.3 + (pulse * 0.7);
+                        // Also scale slightly for depth effect
+                        let scale = 0.7 + (pulse * 0.3);
+                        
+                        el.opacity(opacity)
+                            .w(px(dot_size * scale))
+                            .h(px(dot_size * scale))
+                    },
+                )
+        }))
+}
+
 /// The connection configuration window
 pub struct ConnectionModal {
     title_bar: Entity<TitleBar>,
@@ -23,6 +78,7 @@ pub struct ConnectionModal {
     connections: Vec<Connection>,
     selected_connection_index: Option<usize>,
     db_type: DatabaseType,
+    test_result: TestResult,
     // Form fields
     name_input: Entity<TextInput>,
     host_input: Entity<TextInput>,
@@ -30,6 +86,7 @@ pub struct ConnectionModal {
     database_input: Entity<TextInput>,
     user_input: Entity<TextInput>,
     password_input: Entity<TextInput>,
+    connection_string_input: Entity<TextInput>,
 }
 
 impl ConnectionModal {
@@ -48,6 +105,15 @@ impl ConnectionModal {
         let database_input = cx.new(|cx| TextInput::new(cx, "Database name", ""));
         let user_input = cx.new(|cx| TextInput::new(cx, "Username", ""));
         let password_input = cx.new(|cx| TextInput::new(cx, "Password", "").password());
+        let placeholder = match db_type {
+            DatabaseType::PostgreSQL => "postgresql://user:pass@host:port/db",
+            DatabaseType::MongoDB => "mongodb://user:pass@host:port/db",
+            DatabaseType::Redis => "redis://user:pass@host:port",
+            DatabaseType::MySQL => "mysql://user:pass@host:port/db",
+            DatabaseType::SQLite => "/path/to/database.db",
+        };
+        let connection_string_input =
+            cx.new(|cx| TextInput::new(cx, placeholder, ""));
 
         Self {
             title_bar,
@@ -55,17 +121,20 @@ impl ConnectionModal {
             connections,
             selected_connection_index: None,
             db_type,
+            test_result: TestResult::None,
             name_input,
             host_input,
             port_input,
             database_input,
             user_input,
             password_input,
+            connection_string_input,
         }
     }
 
     fn select_connection(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected_connection_index = Some(index);
+        self.test_result = TestResult::None;
         if let Some(conn) = self.connections.get(index) {
             self.db_type = conn.db_type;
             self.name_input
@@ -83,12 +152,16 @@ impl ConnectionModal {
             self.password_input.update(cx, |input, _| {
                 input.set_text(conn.password.as_deref().unwrap_or(""))
             });
+            self.connection_string_input.update(cx, |input, _| {
+                input.set_text(conn.connection_string.as_deref().unwrap_or(""))
+            });
         }
         cx.notify();
     }
 
     fn new_connection(&mut self, cx: &mut Context<Self>) {
         self.selected_connection_index = None;
+        self.test_result = TestResult::None;
         let conn = Connection::new(self.db_type);
         self.name_input
             .update(cx, |input, _| input.set_text(&conn.name));
@@ -101,21 +174,28 @@ impl ConnectionModal {
         self.user_input.update(cx, |input, _| input.set_text(""));
         self.password_input
             .update(cx, |input, _| input.set_text(""));
+        self.connection_string_input
+            .update(cx, |input, _| input.set_text(""));
         cx.notify();
     }
 
-    fn save_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn build_connection(&self, cx: &App) -> Connection {
         let name = self.name_input.read(cx).text();
         let host = self.host_input.read(cx).text();
         let port_str = self.port_input.read(cx).text();
         let database = self.database_input.read(cx).text();
         let username = self.user_input.read(cx).text();
         let password = self.password_input.read(cx).text();
+        let connection_string = self.connection_string_input.read(cx).text();
 
         let port: u16 = port_str.parse().unwrap_or(self.db_type.default_port());
 
-        let connection = Connection {
-            id: uuid::Uuid::new_v4().to_string(),
+        Connection {
+            id: self
+                .selected_connection_index
+                .and_then(|i| self.connections.get(i))
+                .map(|c| c.id.clone())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name,
             db_type: self.db_type,
             host,
@@ -135,7 +215,16 @@ impl ConnectionModal {
             } else {
                 Some(password)
             },
-        };
+            connection_string: if connection_string.is_empty() {
+                None
+            } else {
+                Some(connection_string)
+            },
+        }
+    }
+
+    fn save_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let connection = self.build_connection(cx);
 
         if let Err(e) = self.storage.save(&connection) {
             eprintln!("Failed to save connection: {}", e);
@@ -146,6 +235,127 @@ impl ConnectionModal {
             // Close the window after saving
             window.remove_window();
         }
+    }
+
+    /// Validate that required connection fields are filled
+    fn validate_connection(&self, cx: &App) -> Result<(), String> {
+        let host = self.host_input.read(cx).text();
+        let connection_string = self.connection_string_input.read(cx).text();
+        let database = self.database_input.read(cx).text();
+        
+        // If connection string is provided, that's sufficient
+        if !connection_string.is_empty() {
+            return Ok(());
+        }
+        
+        // For SQLite, we need a database path
+        if self.db_type == DatabaseType::SQLite {
+            if database.is_empty() {
+                return Err("Please provide a database file path or connection string".to_string());
+            }
+            return Ok(());
+        }
+        
+        // For Redis, host is sufficient (no database name needed)
+        if self.db_type == DatabaseType::Redis {
+            if host.is_empty() {
+                return Err("Please provide a host or connection string".to_string());
+            }
+            return Ok(());
+        }
+        
+        // For PostgreSQL, MySQL, MongoDB - need host AND database
+        if host.is_empty() {
+            return Err("Please provide a host or connection string".to_string());
+        }
+        if database.is_empty() {
+            return Err("Please provide a database name".to_string());
+        }
+        
+        Ok(())
+    }
+
+    fn test_connection(&mut self, cx: &mut Context<Self>) {
+        // Don't allow multiple concurrent tests
+        if matches!(self.test_result, TestResult::Testing) {
+            return;
+        }
+
+        // Validate required fields first
+        if let Err(msg) = self.validate_connection(cx) {
+            self.test_result = TestResult::Error(msg);
+            cx.notify();
+            return;
+        }
+
+        // Check if driver is available
+        if !self.db_type.is_available() {
+            self.test_result = TestResult::Error(format!(
+                "{} driver not compiled. Rebuild with --features {}",
+                self.db_type.name(),
+                self.db_type.feature_name()
+            ));
+            cx.notify();
+            return;
+        }
+
+        self.test_result = TestResult::Testing;
+        cx.notify();
+
+        // Build connection config
+        let connection = self.build_connection(cx);
+        let conn_string = connection.get_connection_string();
+        let config = ConnectionConfig::new(self.db_type, conn_string);
+        
+        // Use a channel to communicate between threads
+        let (tx, rx) = std::sync::mpsc::channel();
+        
+        // Run test in a separate thread with its own tokio runtime
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(async {
+                match create_connection(config) {
+                    Ok(conn) => conn.test_connection().await,
+                    Err(e) => Err(e),
+                }
+            });
+            tx.send(result).ok();
+        });
+        
+        // Poll for result using spawn
+        cx.spawn(async move |this, cx| {
+            loop {
+                // Check if result is ready
+                match rx.try_recv() {
+                    Ok(result) => {
+                        this.update(cx, |modal: &mut ConnectionModal, cx| {
+                            modal.test_result = match result {
+                                Ok(info) => TestResult::Success {
+                                    version: info.server_version.unwrap_or_else(|| "Unknown".to_string()),
+                                    latency_ms: info.latency_ms,
+                                },
+                                Err(e) => TestResult::Error(e.to_string()),
+                            };
+                            cx.notify();
+                        }).ok();
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        // Not ready yet, wait a bit
+                        cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // Thread died
+                        this.update(cx, |modal: &mut ConnectionModal, cx| {
+                            modal.test_result = TestResult::Error("Connection test failed unexpectedly".to_string());
+                            cx.notify();
+                        }).ok();
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     fn focus_next_field(
@@ -161,6 +371,7 @@ impl ConnectionModal {
             &self.database_input,
             &self.user_input,
             &self.password_input,
+            &self.connection_string_input,
         ];
 
         let current_idx = fields
@@ -186,6 +397,7 @@ impl ConnectionModal {
             &self.database_input,
             &self.user_input,
             &self.password_input,
+            &self.connection_string_input,
         ];
 
         let current_idx = fields
@@ -324,7 +536,7 @@ impl ConnectionModal {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.0))
+            .gap(px(6.0))
             .child(
                 div()
                     .text_size(px(12.0))
@@ -333,6 +545,124 @@ impl ConnectionModal {
                     .child(label.to_string()),
             )
             .child(input)
+    }
+
+    fn render_form_field_with_hint(
+        label: &str,
+        hint: &str,
+        input: Entity<TextInput>,
+    ) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(0x909090))
+                            .child(label.to_string()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(rgb(0x606060))
+                            .child(hint.to_string()),
+                    ),
+            )
+            .child(input)
+    }
+
+    fn render_test_result(&self) -> impl IntoElement {
+        match &self.test_result {
+            TestResult::None => div(),
+            TestResult::Testing => div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .child(render_loading_spinner("connection-test-spinner"))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0x0078d4))
+                        .child("Testing connection..."),
+                ),
+            TestResult::Success { version, latency_ms } => div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .w(px(8.0))
+                                .h(px(8.0))
+                                .rounded_full()
+                                .bg(rgb(0x4caf50)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(0x4caf50))
+                                .child("Connection successful"),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgb(0x808080))
+                        .child(format!("{} ({}ms)", version, latency_ms)),
+                ),
+            TestResult::Error(msg) => div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .min_w_0()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .flex_shrink_0()
+                        .child(
+                            div()
+                                .w(px(8.0))
+                                .h(px(8.0))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(rgb(0xf44336)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(0xf44336))
+                                .child("Connection failed"),
+                        ),
+                )
+                .child(
+                    div()
+                        .max_h(px(48.0))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgb(0x808080))
+                                .child(msg.clone()),
+                        ),
+                ),
+        }
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -375,9 +705,31 @@ impl ConnectionModal {
                     .p(px(24.0))
                     .flex()
                     .flex_col()
-                    .gap(px(18.0))
+                    .gap(px(16.0))
                     // Name field
                     .child(Self::render_form_field("Name", self.name_input.clone()))
+                    // Connection String field (overrides below)
+                    .child(Self::render_form_field_with_hint(
+                        "Connection String",
+                        "Overrides fields below if set",
+                        self.connection_string_input.clone(),
+                    ))
+                    // Divider
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.0))
+                            .child(div().flex_1().h(px(1.0)).bg(rgb(0x333333)))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(rgb(0x606060))
+                                    .child("OR"),
+                            )
+                            .child(div().flex_1().h(px(1.0)).bg(rgb(0x333333))),
+                    )
                     // Host and Port row
                     .child(
                         div()
@@ -391,7 +743,7 @@ impl ConnectionModal {
                                 )),
                             )
                             .child(
-                                div().w(px(120.0)).child(Self::render_form_field(
+                                div().w(px(100.0)).child(Self::render_form_field(
                                     "Port",
                                     self.port_input.clone(),
                                 )),
@@ -402,75 +754,118 @@ impl ConnectionModal {
                         "Database",
                         self.database_input.clone(),
                     ))
-                    // Username field
-                    .child(Self::render_form_field("User", self.user_input.clone()))
-                    // Password field
-                    .child(Self::render_form_field(
-                        "Password",
-                        self.password_input.clone(),
-                    )),
+                    // Username and Password row
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(16.0))
+                            .child(
+                                div().flex_1().child(Self::render_form_field(
+                                    "User",
+                                    self.user_input.clone(),
+                                )),
+                            )
+                            .child(
+                                div().flex_1().child(Self::render_form_field(
+                                    "Password",
+                                    self.password_input.clone(),
+                                )),
+                            ),
+                    ),
             )
             // Footer with buttons
             .child(
                 div()
                     .id("modal-footer")
                     .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .gap(px(12.0))
                     .px(px(24.0))
                     .py(px(16.0))
                     .border_t_1()
                     .border_color(border_color)
-                    // Left side - Test Connection
+                    // Test result - constrained width
                     .child(
                         div()
-                            .id("test-connection")
-                            .cursor_pointer()
-                            .text_size(px(13.0))
-                            .text_color(rgb(0x0078d4))
-                            .hover(|s| s.text_color(rgb(0x1a8cff)))
-                            .child("Test Connection"),
+                            .w_full()
+                            .min_w_0()
+                            .child(self.render_test_result())
                     )
-                    // Right side - buttons
+                    // Buttons row
                     .child(
                         div()
                             .flex()
                             .flex_row()
-                            .gap(px(10.0))
-                            .child(
+                            .flex_shrink_0()
+                            .justify_between()
+                            .items_center()
+                            // Left side - Test Connection
+                            .child({
+                                let is_testing = matches!(self.test_result, TestResult::Testing);
                                 div()
-                                    .id("cancel-btn")
-                                    .cursor_pointer()
-                                    .px(px(18.0))
+                                    .id("test-connection")
+                                    .when(!is_testing, |el| el.cursor_pointer())
+                                    .px(px(14.0))
                                     .py(px(8.0))
-                                    .bg(rgb(0x333333))
                                     .rounded_md()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(0xffffff))
-                                    .hover(|s| s.bg(rgb(0x404040)))
-                                    .on_click(|_, window, _cx| {
-                                        window.remove_window();
+                                    .border_1()
+                                    .when(is_testing, |el| {
+                                        el.border_color(rgb(0x404040))
+                                            .text_color(rgb(0x606060))
                                     })
-                                    .child("Cancel"),
-                            )
+                                    .when(!is_testing, |el| {
+                                        el.border_color(rgb(0x0078d4))
+                                            .text_color(rgb(0x0078d4))
+                                            .hover(|s| s.bg(rgba(0x0078d420)))
+                                    })
+                                    .text_size(px(13.0))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.test_connection(cx);
+                                    }))
+                                    .child(if is_testing { "Testing..." } else { "Test Connection" })
+                            })
+                            // Right side - buttons
                             .child(
                                 div()
-                                    .id("save-btn")
-                                    .cursor_pointer()
-                                    .px(px(18.0))
-                                    .py(px(8.0))
-                                    .bg(rgb(0x0078d4))
-                                    .rounded_md()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(rgb(0xffffff))
-                                    .hover(|s| s.bg(rgb(0x1a8cff)))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.save_connection(window, cx);
-                                    }))
-                                    .child("Save"),
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(10.0))
+                                    .child(
+                                        div()
+                                            .id("cancel-btn")
+                                            .cursor_pointer()
+                                            .px(px(18.0))
+                                            .py(px(8.0))
+                                            .bg(rgb(0x333333))
+                                            .rounded_md()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(0xffffff))
+                                            .hover(|s| s.bg(rgb(0x404040)))
+                                            .on_click(|_, window, _cx| {
+                                                window.remove_window();
+                                            })
+                                            .child("Cancel"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("save-btn")
+                                            .cursor_pointer()
+                                            .px(px(18.0))
+                                            .py(px(8.0))
+                                            .bg(rgb(0x0078d4))
+                                            .rounded_md()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(0xffffff))
+                                            .hover(|s| s.bg(rgb(0x1a8cff)))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.save_connection(window, cx);
+                                            }))
+                                            .child("Save"),
+                                    ),
                             ),
                     ),
             )

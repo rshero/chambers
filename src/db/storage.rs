@@ -32,10 +32,23 @@ impl ConnectionStorage {
                 port INTEGER NOT NULL,
                 database TEXT,
                 username TEXT,
-                password TEXT
+                password TEXT,
+                connection_string TEXT
             )",
             [],
         )?;
+
+        // Migration: add connection_string column if it doesn't exist
+        let has_conn_str: bool = conn
+            .prepare("SELECT connection_string FROM connections LIMIT 1")
+            .is_ok();
+        if !has_conn_str {
+            conn.execute(
+                "ALTER TABLE connections ADD COLUMN connection_string TEXT",
+                [],
+            )
+            .ok(); // Ignore error if column already exists
+        }
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -52,7 +65,7 @@ impl ConnectionStorage {
     pub fn get_all(&self) -> Result<Vec<Connection>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, db_type, host, port, database, username, password FROM connections",
+            "SELECT id, name, db_type, host, port, database, username, password, connection_string FROM connections",
         )?;
 
         let connections = stmt
@@ -62,6 +75,8 @@ impl ConnectionStorage {
                     "MongoDB" => DatabaseType::MongoDB,
                     "Redis" => DatabaseType::Redis,
                     "PostgreSQL" => DatabaseType::PostgreSQL,
+                    "MySQL" => DatabaseType::MySQL,
+                    "SQLite" => DatabaseType::SQLite,
                     _ => DatabaseType::PostgreSQL,
                 };
 
@@ -74,6 +89,7 @@ impl ConnectionStorage {
                     database: row.get(5)?,
                     username: row.get(6)?,
                     password: row.get(7)?,
+                    connection_string: row.get(8)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -86,8 +102,8 @@ impl ConnectionStorage {
     pub fn save(&self, connection: &Connection) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO connections (id, name, db_type, host, port, database, username, password)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO connections (id, name, db_type, host, port, database, username, password, connection_string)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 connection.id,
                 connection.name,
@@ -97,6 +113,7 @@ impl ConnectionStorage {
                 connection.database,
                 connection.username,
                 connection.password,
+                connection.connection_string,
             ],
         )?;
         Ok(())

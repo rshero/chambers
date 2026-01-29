@@ -73,6 +73,9 @@ pub struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     is_password: bool,
+    /// Horizontal scroll offset for text that overflows the input width.
+    /// This is a positive value representing how many pixels the text is scrolled to the left.
+    scroll_offset: Pixels,
 }
 
 impl TextInput {
@@ -89,6 +92,7 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             is_password: false,
+            scroll_offset: px(0.),
         }
     }
 
@@ -106,6 +110,8 @@ impl TextInput {
         self.content = text.to_string().into();
         let len = self.content.len();
         self.selected_range = len..len;
+        // Reset scroll offset when text is programmatically set
+        self.scroll_offset = px(0.);
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -262,6 +268,23 @@ impl TextInput {
         }
     }
 
+    /// Updates the scroll offset to ensure the cursor remains visible within the input bounds.
+    /// Call this after any operation that moves the cursor.
+    fn update_scroll_offset(&mut self, cursor_x: Pixels, bounds_width: Pixels) {
+        // Add some padding so cursor isn't right at the edge
+        let padding = px(2.);
+        let visible_width = bounds_width - padding;
+
+        // If cursor is to the left of the visible area, scroll left
+        if cursor_x < self.scroll_offset {
+            self.scroll_offset = (cursor_x - padding).max(px(0.));
+        }
+        // If cursor is to the right of the visible area, scroll right
+        else if cursor_x > self.scroll_offset + visible_width {
+            self.scroll_offset = cursor_x - visible_width + padding;
+        }
+    }
+
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
@@ -276,7 +299,8 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        // Account for scroll_offset when calculating the click position
+        line.closest_index_for_x(position.x - bounds.left() + self.scroll_offset)
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -490,13 +514,14 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
+        // Apply scroll_offset to reported bounds (for IME positioning)
         Some(Bounds::from_corners(
             point(
-                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.left() + last_layout.x_for_index(range.start) - self.scroll_offset,
                 bounds.top(),
             ),
             point(
-                bounds.left() + last_layout.x_for_index(range.end),
+                bounds.left() + last_layout.x_for_index(range.end) - self.scroll_offset,
                 bounds.bottom(),
             ),
         ))
@@ -510,7 +535,8 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
+        // Account for scroll_offset when calculating character index from point
+        let utf8_index = last_layout.index_for_x(point.x - line_point.x + self.scroll_offset)?;
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -529,6 +555,7 @@ struct PrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+    scroll_offset: Pixels,
 }
 
 impl IntoElement for TextElement {
@@ -639,6 +666,14 @@ impl gpui::Element for TextElement {
         };
         let cursor_pos = line.x_for_index(cursor_index);
 
+        // Update scroll offset to keep cursor visible, then read the updated value
+        let scroll_offset = {
+            self.input.update(cx, |input, _| {
+                input.update_scroll_offset(cursor_pos, bounds.size.width);
+                input.scroll_offset
+            })
+        };
+
         // Calculate selection range for password
         let (sel_start, sel_end) = if is_password && !content.is_empty() {
             let start = content[..selected_range.start.min(content.len())]
@@ -654,12 +689,13 @@ impl gpui::Element for TextElement {
             (selected_range.start, selected_range.end)
         };
 
+        // Apply scroll_offset to cursor and selection positions
         let (selection, cursor_quad) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
+                        point(bounds.left() + cursor_pos - scroll_offset, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
                     rgb(0x0078d4),
@@ -669,8 +705,14 @@ impl gpui::Element for TextElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(bounds.left() + line.x_for_index(sel_start), bounds.top()),
-                        point(bounds.left() + line.x_for_index(sel_end), bounds.bottom()),
+                        point(
+                            bounds.left() + line.x_for_index(sel_start) - scroll_offset,
+                            bounds.top(),
+                        ),
+                        point(
+                            bounds.left() + line.x_for_index(sel_end) - scroll_offset,
+                            bounds.bottom(),
+                        ),
                     ),
                     rgba(0x0078d440),
                 )),
@@ -682,6 +724,7 @@ impl gpui::Element for TextElement {
             line: Some(line),
             cursor: cursor_quad,
             selection,
+            scroll_offset,
         }
     }
 
@@ -707,7 +750,9 @@ impl gpui::Element for TextElement {
         }
 
         let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
+        // Apply scroll_offset to text rendering - shift text left by scroll_offset
+        let text_origin = point(bounds.origin.x - prepaint.scroll_offset, bounds.origin.y);
+        line.paint(text_origin, window.line_height(), window, cx)
             .unwrap();
 
         if focus_handle.is_focused(window) {
@@ -771,6 +816,7 @@ impl Render for TextInput {
             .text_size(px(13.0))
             .text_color(rgb(0xe0e0e0))
             .line_height(px(20.0))
+            .overflow_hidden()
             .child(TextElement {
                 input: cx.entity().clone(),
             })
