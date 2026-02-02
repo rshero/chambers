@@ -90,6 +90,8 @@ pub struct Sidebar {
     database_menu: Option<Entity<DatabaseMenu>>,
     database_picker: Option<Entity<DatabasePicker>>,
     database_picker_connection_id: Option<String>,
+    /// Timestamp of last picker dismiss (for toggle detection)
+    last_picker_dismiss: Option<std::time::Instant>,
     storage: Arc<ConnectionStorage>,
     connections: Vec<Connection>,
     expanded_connections: std::collections::HashSet<String>,
@@ -104,6 +106,7 @@ impl Sidebar {
             database_menu: None,
             database_picker: None,
             database_picker_connection_id: None,
+            last_picker_dismiss: None,
             storage,
             connections,
             expanded_connections: std::collections::HashSet::new(),
@@ -158,9 +161,23 @@ impl Sidebar {
         if self.database_picker_connection_id.as_ref() == Some(&conn_id) {
             self.database_picker = None;
             self.database_picker_connection_id = None;
+            self.last_picker_dismiss = None;
             cx.notify();
             return;
         }
+
+        // Check if we just dismissed the picker for this connection (within 100ms)
+        // This handles the case where on_mouse_down_out fires before our click handler
+        if let Some(dismiss_time) = self.last_picker_dismiss {
+            if dismiss_time.elapsed() < std::time::Duration::from_millis(100) {
+                // This is a toggle click - don't reopen
+                self.database_picker_connection_id = None;
+                self.last_picker_dismiss = None;
+                cx.notify();
+                return;
+            }
+        }
+        self.last_picker_dismiss = None;
 
         // Get database info from the browser
         let (all_databases, visible_databases, show_all) =
@@ -188,9 +205,10 @@ impl Sidebar {
             move |this, _, event: &DatabaseVisibilityChanged, _, cx| {
                 if let Some(browser) = this.connection_browsers.get(&conn_id) {
                     browser.update(cx, |browser, cx| {
-                        if event.show_all {
-                            browser.show_all(cx);
-                        } else {
+                        // Always update show_all state first
+                        browser.set_show_all(event.show_all, cx);
+                        // Then update visible databases if not showing all
+                        if !event.show_all {
                             browser.set_visible_databases(event.visible_databases.clone(), cx);
                         }
                     });
@@ -201,7 +219,8 @@ impl Sidebar {
 
         cx.subscribe_in(&picker, window, |this, _, _: &DismissEvent, _, cx| {
             this.database_picker = None;
-            this.database_picker_connection_id = None;
+            this.last_picker_dismiss = Some(std::time::Instant::now());
+            // Keep connection_id for a moment to detect toggle clicks
             cx.notify();
         })
         .detach();
@@ -435,13 +454,6 @@ impl Sidebar {
                                                         .py(px(2.0))
                                                         .rounded(px(4.0))
                                                         .hover(|s| s.bg(rgb(0x333333)))
-                                                        // Stop mouse down propagation to prevent picker's on_mouse_down_out from firing
-                                                        .on_mouse_down(
-                                                            MouseButton::Left,
-                                                            |_, _, cx| {
-                                                                cx.stop_propagation();
-                                                            },
-                                                        )
                                                         .on_click(cx.listener({
                                                             let conn_id = conn_id.clone();
                                                             move |this, _, window, cx| {

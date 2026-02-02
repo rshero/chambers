@@ -82,12 +82,13 @@ impl ConnectionBrowser {
     /// Set which databases are visible (for filtering)
     pub fn set_visible_databases(&mut self, databases: Vec<String>, cx: &mut Context<Self>) {
         self.visible_databases = databases;
+        self.show_all_databases = false; // When setting specific databases, disable show_all
         cx.notify();
     }
 
-    /// Show all databases
-    pub fn show_all(&mut self, cx: &mut Context<Self>) {
-        self.show_all_databases = true;
+    /// Set show_all state
+    pub fn set_show_all(&mut self, show_all: bool, cx: &mut Context<Self>) {
+        self.show_all_databases = show_all;
         cx.notify();
     }
 
