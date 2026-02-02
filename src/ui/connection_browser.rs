@@ -400,14 +400,15 @@ impl Render for ConnectionBrowser {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_muted = rgb(0x808080);
 
-        // Determine which databases to show
-        let databases_to_show: Vec<_> = if self.show_all_databases {
-            self.databases.clone()
+        // Get indices of databases to show (avoid cloning entire DatabaseInfo structs)
+        let database_indices: Vec<usize> = if self.show_all_databases {
+            (0..self.databases.len()).collect()
         } else {
             self.databases
                 .iter()
-                .filter(|db| self.visible_databases.contains(&db.name))
-                .cloned()
+                .enumerate()
+                .filter(|(_, db)| self.visible_databases.contains(&db.name))
+                .map(|(i, _)| i)
                 .collect()
         };
 
@@ -420,8 +421,9 @@ impl Render for ConnectionBrowser {
             .flex()
             .flex_col()
             .w_full()
-            // Render database items directly (parent sidebar handles scrolling)
-            .children(databases_to_show.iter().enumerate().map(|(i, db)| {
+            // Render database items - only visible ones (limited by MAX_DATABASES_SHOWN initially)
+            .children(database_indices.iter().map(|&i| {
+                let db = &self.databases[i];
                 Self::render_database_item_static(
                     i,
                     db,

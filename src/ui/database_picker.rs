@@ -2,6 +2,9 @@ use gpui::{prelude::*, *};
 
 use crate::ui::text_input::TextInput;
 
+/// Maximum number of items to show in picker (like Zed's file finder limit)
+const MAX_PICKER_ITEMS: usize = 100;
+
 /// Event emitted when database visibility changes
 #[derive(Clone)]
 pub struct DatabaseVisibilityChanged {
@@ -19,6 +22,10 @@ pub struct DatabasePicker {
     visible_databases: Vec<String>,
     show_all: bool,
     search_input: Entity<TextInput>,
+    /// Cached filtered results to avoid recomputing during render
+    filtered_cache: Vec<String>,
+    /// Last search query used for cache
+    last_query: String,
 }
 
 impl DatabasePicker {
@@ -30,12 +37,21 @@ impl DatabasePicker {
     ) -> Self {
         let search_input = cx.new(|cx| TextInput::new(cx, "Search databases...", ""));
 
+        // Pre-compute initial filtered list (limited to MAX_PICKER_ITEMS)
+        let filtered_cache: Vec<String> = all_databases
+            .iter()
+            .take(MAX_PICKER_ITEMS)
+            .cloned()
+            .collect();
+
         Self {
             focus_handle: cx.focus_handle(),
             all_databases,
             visible_databases,
             show_all,
             search_input,
+            filtered_cache,
+            last_query: String::new(),
         }
     }
 
@@ -86,17 +102,34 @@ impl DatabasePicker {
         self.search_input.focus_handle(cx).focus(window);
     }
 
-    /// Get filtered databases based on current search query
-    fn filtered_databases(&self, cx: &App) -> Vec<String> {
+    /// Update filtered cache if query changed
+    fn update_filtered_cache(&mut self, cx: &App) {
         let query = self.search_input.read(cx).text().to_lowercase();
+
+        // Only recompute if query changed
+        if query == self.last_query {
+            return;
+        }
+
+        self.last_query = query.clone();
+
         if query.is_empty() {
-            self.all_databases.clone()
+            // No filter - take first MAX_PICKER_ITEMS
+            self.filtered_cache = self
+                .all_databases
+                .iter()
+                .take(MAX_PICKER_ITEMS)
+                .cloned()
+                .collect();
         } else {
-            self.all_databases
+            // Filter and limit results
+            self.filtered_cache = self
+                .all_databases
                 .iter()
                 .filter(|db| db.to_lowercase().contains(&query))
+                .take(MAX_PICKER_ITEMS)
                 .cloned()
-                .collect()
+                .collect();
         }
     }
 }
@@ -114,12 +147,12 @@ impl Render for DatabasePicker {
         let text_muted = rgb(0x808080);
         let accent_color = rgb(0x0078d4);
 
-        // Get filtered databases - computed fresh each render
-        // This is efficient because TextInput already triggers re-renders when text changes
-        let filtered = self.filtered_databases(cx);
+        // Update cache if needed (only recomputes when query changes)
+        self.update_filtered_cache(cx);
+
         let total_count = self.all_databases.len();
-        let filtered_count = filtered.len();
-        let has_search_query = !self.search_input.read(cx).text().is_empty();
+        let filtered_count = self.filtered_cache.len();
+        let has_search_query = !self.last_query.is_empty();
 
         div()
             .track_focus(&self.focus_handle)
@@ -132,7 +165,6 @@ impl Render for DatabasePicker {
             .rounded(px(6.0))
             .shadow_lg()
             .w(px(280.0))
-            .max_h(px(400.0))
             .flex()
             .flex_col()
             // Search input at top
@@ -181,48 +213,46 @@ impl Render for DatabasePicker {
                     .h(px(1.0))
                     .bg(dropdown_border),
             )
-            // Database list - scrollable with fixed height
+            // Database list - using uniform_list for virtualization
             .child(
                 div()
                     .id("database-list-container")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .h(px(240.0)) // Fixed height for scrollable area
-                    .overflow_y_scroll()
-                    .children(filtered.iter().map(|db_name| {
-                        let is_visible = self.is_database_visible(db_name);
-                        let db_name_clone = db_name.clone();
+                    .h(px(240.0)) // Fixed height required for uniform_list
+                    .overflow_hidden() // Required for uniform_list to work
+                    .child(
+                        uniform_list(
+                            "database-picker-list",
+                            filtered_count,
+                            cx.processor(
+                                move |picker,
+                                      visible_range: std::ops::Range<usize>,
+                                      _window,
+                                      cx| {
+                                    // Only render items in the visible range!
+                                    visible_range
+                                        .map(|ix| {
+                                            let db_name = picker.filtered_cache[ix].clone();
+                                            let is_visible = picker.is_database_visible(&db_name);
 
-                        div()
-                            .id(SharedString::from(format!("db-picker-{}", db_name)))
-                            .px(px(10.0))
-                            .py(px(6.0))
-                            .mx(px(4.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.0))
-                            .hover(|s| s.bg(rgb(0x2a2a2a)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.toggle_database(db_name_clone.clone(), cx);
-                            }))
-                            // Checkbox with tick
-                            .child(render_checkbox(is_visible, accent_color))
-                            // Database name
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(0xe0e0e0))
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(db_name.clone()),
-                            )
-                            .into_any_element()
-                    })),
+                                            render_database_item(
+                                                ix,
+                                                &db_name,
+                                                is_visible,
+                                                accent_color,
+                                                cx.listener({
+                                                    let db_name = db_name.clone();
+                                                    move |picker, _, _, cx| {
+                                                        picker.toggle_database(db_name.clone(), cx);
+                                                    }
+                                                }),
+                                            )
+                                        })
+                                        .collect()
+                                },
+                            ),
+                        )
+                        .size_full(),
+                    ),
             )
             // Footer with count
             .child(
@@ -239,7 +269,11 @@ impl Render for DatabasePicker {
                         div()
                             .text_size(px(11.0))
                             .text_color(text_muted)
-                            .child(format!("{} of {} databases", filtered_count, total_count)),
+                            .child(format!(
+                                "{} of {} databases",
+                                filtered_count.min(MAX_PICKER_ITEMS),
+                                total_count
+                            )),
                     )
                     .when(has_search_query, |el| {
                         el.child(
@@ -251,6 +285,45 @@ impl Render for DatabasePicker {
                     }),
             )
     }
+}
+
+/// Render a single database item for the picker list
+fn render_database_item<F>(
+    index: usize,
+    db_name: &str,
+    is_visible: bool,
+    accent_color: Rgba,
+    on_click: F,
+) -> AnyElement
+where
+    F: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+{
+    div()
+        .id(SharedString::from(format!("db-picker-{}", index)))
+        .px(px(10.0))
+        .py(px(6.0))
+        .mx(px(4.0))
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .hover(|s| s.bg(rgb(0x2a2a2a)))
+        .on_click(on_click)
+        // Checkbox with tick
+        .child(render_checkbox(is_visible, accent_color))
+        // Database name
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(12.0))
+                .text_color(rgb(0xe0e0e0))
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(db_name.to_string()),
+        )
+        .into_any_element()
 }
 
 /// Render a checkbox with tick mark when checked
