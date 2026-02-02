@@ -4,8 +4,7 @@ use async_trait::async_trait;
 use mongodb::{options::ClientOptions, Client};
 use std::time::Instant;
 
-use crate::db::connection::DatabaseType;
-use crate::db::driver::{ConnectionConfig, ConnectionInfo, DatabaseConnection};
+use crate::db::driver::{CollectionInfo, ConnectionConfig, ConnectionInfo, DatabaseConnection, DatabaseInfo};
 use crate::db::error::{ConnectionError, Result};
 
 pub struct MongoConnection {
@@ -72,26 +71,81 @@ impl DatabaseConnection for MongoConnection {
 
         let latency = start.elapsed().as_millis() as u64;
 
-        // Extract database name from connection string
-        let db_name = url::Url::parse(&self.config.connection_string)
-            .ok()
-            .and_then(|u| {
-                let path = u.path();
-                if path.len() > 1 {
-                    Some(path[1..].to_string())
-                } else {
-                    None
-                }
-            });
-
         Ok(ConnectionInfo {
             server_version: version,
             latency_ms: latency,
-            database_name: db_name,
         })
     }
 
-    fn driver(&self) -> DatabaseType {
-        DatabaseType::MongoDB
+    async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
+        // Parse connection string
+        let mut client_options = tokio::time::timeout(
+            self.config.timeout,
+            ClientOptions::parse(&self.config.connection_string),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::InvalidConnectionString(e.to_string()))?;
+
+        client_options.connect_timeout = Some(self.config.timeout);
+        client_options.server_selection_timeout = Some(self.config.timeout);
+
+        let client =
+            Client::with_options(client_options).map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        let databases = tokio::time::timeout(
+            self.config.timeout,
+            client.list_databases(),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        let result = databases
+            .into_iter()
+            .map(|db| DatabaseInfo {
+                name: db.name,
+                size_bytes: Some(db.size_on_disk as u64),
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    async fn list_collections(&self, database_name: &str) -> Result<Vec<CollectionInfo>> {
+        // Parse connection string
+        let mut client_options = tokio::time::timeout(
+            self.config.timeout,
+            ClientOptions::parse(&self.config.connection_string),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::InvalidConnectionString(e.to_string()))?;
+
+        client_options.connect_timeout = Some(self.config.timeout);
+        client_options.server_selection_timeout = Some(self.config.timeout);
+
+        let client =
+            Client::with_options(client_options).map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        let db = client.database(database_name);
+
+        let collections = tokio::time::timeout(
+            self.config.timeout,
+            db.list_collection_names(),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        let result = collections
+            .into_iter()
+            .map(|name| CollectionInfo {
+                name,
+                document_count: None, // Would require additional queries per collection
+            })
+            .collect();
+
+        Ok(result)
     }
 }

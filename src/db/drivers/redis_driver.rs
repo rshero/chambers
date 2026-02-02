@@ -3,7 +3,6 @@
 use async_trait::async_trait;
 use std::time::Instant;
 
-use crate::db::connection::DatabaseType;
 use crate::db::driver::{ConnectionConfig, ConnectionInfo, DatabaseConnection};
 use crate::db::error::{ConnectionError, Result};
 
@@ -64,11 +63,6 @@ impl DatabaseConnection for RedisConnection {
         Ok(ConnectionInfo {
             server_version: version,
             latency_ms: latency,
-            database_name: None, // Redis doesn't have named databases
         })
-    }
-
-    fn driver(&self) -> DatabaseType {
-        DatabaseType::Redis
     }
 }

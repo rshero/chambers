@@ -9,8 +9,20 @@ use super::connection::DatabaseType;
 pub struct ConnectionInfo {
     pub server_version: Option<String>,
     pub latency_ms: u64,
-    #[allow(dead_code)]
-    pub database_name: Option<String>,
+}
+
+/// Database information
+#[derive(Debug, Clone)]
+pub struct DatabaseInfo {
+    pub name: String,
+    pub size_bytes: Option<u64>,
+}
+
+/// Collection information
+#[derive(Debug, Clone)]
+pub struct CollectionInfo {
+    pub name: String,
+    pub document_count: Option<u64>,
 }
 
 /// Core trait for database connections
@@ -19,9 +31,19 @@ pub trait DatabaseConnection: Send + Sync {
     /// Test if connection can be established
     async fn test_connection(&self) -> Result<ConnectionInfo>;
 
-    /// Get driver type
+    /// List all databases (for MongoDB and similar)
+    /// Returns empty list for databases that don't support this operation
+    async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
+        Ok(Vec::new())
+    }
+
+    /// List collections in a specific database
+    /// Returns empty list for databases that don't support this operation
     #[allow(dead_code)]
-    fn driver(&self) -> DatabaseType;
+    async fn list_collections(&self, database_name: &str) -> Result<Vec<CollectionInfo>> {
+        let _ = database_name;
+        Ok(Vec::new())
+    }
 }
 
 /// Configuration for creating a database connection
@@ -39,12 +61,6 @@ impl ConnectionConfig {
             connection_string,
             timeout: Duration::from_secs(10),
         }
-    }
-    
-    #[allow(dead_code)]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
     }
 }
 

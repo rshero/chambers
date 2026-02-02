@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::db::connection::DatabaseType;
 use crate::db::driver::{ConnectionConfig, ConnectionInfo, DatabaseConnection};
 use crate::db::error::{ConnectionError, Result};
 
@@ -57,11 +56,6 @@ impl DatabaseConnection for SqliteConnection {
         Ok(ConnectionInfo {
             server_version: Some(format!("SQLite {}", result)),
             latency_ms: latency,
-            database_name: Some(self.config.connection_string.clone()),
         })
-    }
-
-    fn driver(&self) -> DatabaseType {
-        DatabaseType::SQLite
     }
 }

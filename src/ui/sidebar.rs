@@ -1,10 +1,13 @@
 use gpui::{prelude::*, *};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::db::{Connection, ConnectionStorage, DatabaseType};
+use crate::ui::connection_browser::{
+    CollectionSelected, ConnectionBrowser, DatabaseSelected as BrowserDatabaseSelected,
+    LoadingState,
+};
 use crate::ui::database_menu::{DatabaseMenu, DatabaseSelected};
+use crate::ui::database_picker::{DatabasePicker, DatabaseVisibilityChanged};
 use crate::ui::tooltip::Tooltip;
 
 /// Size of the resize handle in pixels
@@ -20,6 +23,7 @@ const MIN_SIDEBAR_WIDTH: f32 = 150.0;
 const MAX_SIDEBAR_WIDTH: f32 = 600.0;
 
 /// Event emitted when user wants to add a new connection
+#[derive(Clone)]
 pub struct AddConnectionRequested(pub DatabaseType);
 
 impl EventEmitter<AddConnectionRequested> for Sidebar {}
@@ -83,10 +87,13 @@ impl RenderOnce for ToolbarButton {
 /// The resizable sidebar component
 pub struct Sidebar {
     width: Pixels,
-    database_menu: Rc<RefCell<Option<Entity<DatabaseMenu>>>>,
+    database_menu: Option<Entity<DatabaseMenu>>,
+    database_picker: Option<Entity<DatabasePicker>>,
+    database_picker_connection_id: Option<String>,
     storage: Arc<ConnectionStorage>,
     connections: Vec<Connection>,
     expanded_connections: std::collections::HashSet<String>,
+    connection_browsers: std::collections::HashMap<String, Entity<ConnectionBrowser>>,
 }
 
 impl Sidebar {
@@ -94,10 +101,13 @@ impl Sidebar {
         let connections = storage.get_all().unwrap_or_default();
         Self {
             width: px(DEFAULT_SIDEBAR_WIDTH),
-            database_menu: Rc::new(RefCell::new(None)),
+            database_menu: None,
+            database_picker: None,
+            database_picker_connection_id: None,
             storage,
             connections,
             expanded_connections: std::collections::HashSet::new(),
+            connection_browsers: std::collections::HashMap::new(),
         }
     }
 
@@ -120,13 +130,13 @@ impl Sidebar {
         // Subscribe to menu events
         cx.subscribe_in(&menu, window, |this, _, event: &DatabaseSelected, _, cx| {
             cx.emit(AddConnectionRequested(event.0));
-            *this.database_menu.borrow_mut() = None;
+            this.database_menu = None;
             cx.notify();
         })
         .detach();
 
         cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            *this.database_menu.borrow_mut() = None;
+            this.database_menu = None;
             cx.notify();
         })
         .detach();
@@ -134,7 +144,75 @@ impl Sidebar {
         // Focus the menu
         menu.focus_handle(cx).focus(window);
 
-        *self.database_menu.borrow_mut() = Some(menu);
+        self.database_menu = Some(menu);
+        cx.notify();
+    }
+
+    fn show_database_picker(
+        &mut self,
+        conn_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Check if picker is already open for this connection - if so, close it (toggle behavior)
+        if self.database_picker_connection_id.as_ref() == Some(&conn_id) {
+            self.database_picker = None;
+            self.database_picker_connection_id = None;
+            cx.notify();
+            return;
+        }
+
+        // Get database info from the browser
+        let (all_databases, visible_databases, show_all) =
+            if let Some(browser) = self.connection_browsers.get(&conn_id) {
+                let browser = browser.read(cx);
+                (
+                    browser.database_names(),
+                    browser.visible_databases(),
+                    browser.is_showing_all(),
+                )
+            } else {
+                (Vec::new(), Vec::new(), false)
+            };
+
+        if all_databases.is_empty() {
+            return;
+        }
+
+        let picker =
+            cx.new(|cx| DatabasePicker::new(all_databases, visible_databases, show_all, cx));
+
+        // Subscribe to picker events
+        cx.subscribe_in(&picker, window, {
+            let conn_id = conn_id.clone();
+            move |this, _, event: &DatabaseVisibilityChanged, _, cx| {
+                if let Some(browser) = this.connection_browsers.get(&conn_id) {
+                    browser.update(cx, |browser, cx| {
+                        if event.show_all {
+                            browser.show_all(cx);
+                        } else {
+                            browser.set_visible_databases(event.visible_databases.clone(), cx);
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
+
+        cx.subscribe_in(&picker, window, |this, _, _: &DismissEvent, _, cx| {
+            this.database_picker = None;
+            this.database_picker_connection_id = None;
+            cx.notify();
+        })
+        .detach();
+
+        // Focus the search input inside the picker for immediate typing
+        picker.update(cx, |picker, cx| {
+            picker.focus_search(window, cx);
+        });
+
+        self.database_picker = Some(picker);
+        self.database_picker_connection_id = Some(conn_id);
         cx.notify();
     }
 
@@ -143,7 +221,7 @@ impl Sidebar {
         let icon_color = rgb(0x808080);
         let icon_hover_color = rgb(0xe0e0e0);
         let bg_hover = rgba(0xffffff0f);
-        let menu = self.database_menu.borrow().clone();
+        let menu = self.database_menu.clone();
 
         div()
             .id("sidebar-toolbar")
@@ -205,11 +283,40 @@ impl Sidebar {
             ))
     }
 
-    fn toggle_connection(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.expanded_connections.contains(id) {
-            self.expanded_connections.remove(id);
+    fn toggle_connection(&mut self, conn: &Connection, cx: &mut Context<Self>) {
+        let id = conn.id.clone();
+        if self.expanded_connections.contains(&id) {
+            self.expanded_connections.remove(&id);
         } else {
-            self.expanded_connections.insert(id.to_string());
+            self.expanded_connections.insert(id.clone());
+            // Create or get the connection browser for this connection
+            if !self.connection_browsers.contains_key(&id) {
+                let browser = cx.new(|_cx| ConnectionBrowser::new(conn.clone()));
+
+                // Subscribe to browser events
+                cx.subscribe(&browser, |_this, _, event: &BrowserDatabaseSelected, cx| {
+                    println!("Database selected: {}", event.0);
+                    cx.notify();
+                })
+                .detach();
+
+                cx.subscribe(&browser, |_this, _, event: &CollectionSelected, cx| {
+                    println!("Collection selected: {}.{}", event.0, event.1);
+                    cx.notify();
+                })
+                .detach();
+
+                self.connection_browsers.insert(id.clone(), browser);
+
+                // Load databases for MongoDB connections
+                if conn.db_type == DatabaseType::MongoDB {
+                    if let Some(browser) = self.connection_browsers.get(&id) {
+                        browser.update(cx, |browser, cx| {
+                            browser.load_databases(cx);
+                        });
+                    }
+                }
+            }
         }
         cx.notify();
     }
@@ -218,6 +325,7 @@ impl Sidebar {
         let hover_bg = rgb(0x252525);
         let text_color = rgb(0xe0e0e0);
         let text_muted = rgb(0x808080);
+        let accent_color = rgb(0x0078d4);
 
         div()
             .id("connections-list")
@@ -230,6 +338,20 @@ impl Sidebar {
                 let conn_name = conn.name.clone();
                 let db_type = conn.db_type;
                 let is_expanded = self.expanded_connections.contains(&conn.id);
+                let conn_clone = conn.clone();
+
+                // Get database count if browser exists
+                let (db_count, visible_count, is_loading) =
+                    if let Some(browser) = self.connection_browsers.get(&conn_id) {
+                        let browser = browser.read(cx);
+                        (
+                            browser.database_count(),
+                            browser.visible_count(),
+                            matches!(browser.loading_state, LoadingState::LoadingDatabases),
+                        )
+                    } else {
+                        (0, 0, false)
+                    };
 
                 div()
                     .id(SharedString::from(format!("conn-{}", conn_id)))
@@ -251,9 +373,9 @@ impl Sidebar {
                             .rounded(px(4.0))
                             .hover(|s| s.bg(hover_bg))
                             .on_click(cx.listener({
-                                let id = conn_id.clone();
+                                let conn_clone = conn_clone.clone();
                                 move |this, _, _, cx| {
-                                    this.toggle_connection(&id, cx);
+                                    this.toggle_connection(&conn_clone, cx);
                                 }
                             }))
                             // Collapse/expand chevron
@@ -270,28 +392,143 @@ impl Sidebar {
                             )
                             // Database icon
                             .child(img(db_type.icon_path()).size(px(16.0)).flex_none())
-                            // Connection name
+                            // Connection name with count badge inline
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(px(13.0))
-                                    .text_color(text_color)
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(conn_name),
-                            ),
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(px(13.0))
+                                            .text_color(text_color)
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(conn_name),
+                                    )
+                                    // Database count badge (clickable, only when expanded and has databases)
+                                    // Wrapped in relative container so picker can be positioned absolutely below it
+                                    .when(is_expanded && db_count > 0, |el| {
+                                        let is_picker_open =
+                                            self.database_picker_connection_id.as_ref()
+                                                == Some(&conn_id);
+                                        let picker = self.database_picker.clone();
+
+                                        el.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "db-count-wrapper-{}",
+                                                    conn_id
+                                                )))
+                                                .relative() // Create positioning context for picker
+                                                .child(
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "db-count-{}",
+                                                            conn_id
+                                                        )))
+                                                        .cursor_pointer()
+                                                        .px(px(6.0))
+                                                        .py(px(2.0))
+                                                        .rounded(px(4.0))
+                                                        .hover(|s| s.bg(rgb(0x333333)))
+                                                        // Stop mouse down propagation to prevent picker's on_mouse_down_out from firing
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            |_, _, cx| {
+                                                                cx.stop_propagation();
+                                                            },
+                                                        )
+                                                        .on_click(cx.listener({
+                                                            let conn_id = conn_id.clone();
+                                                            move |this, _, window, cx| {
+                                                                this.show_database_picker(
+                                                                    conn_id.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                                cx.stop_propagation();
+                                                            }
+                                                        }))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.0))
+                                                                .text_color(text_muted)
+                                                                .child(format!(
+                                                                    "{} of {}",
+                                                                    visible_count, db_count
+                                                                )),
+                                                        ),
+                                                )
+                                                // Database picker dropdown positioned below the badge
+                                                .when(is_picker_open, |el| {
+                                                    if let Some(picker) = picker {
+                                                        return el.child(
+                                                            deferred(
+                                                                div()
+                                                                    .absolute()
+                                                                    .top(px(26.0))
+                                                                    .left_0()
+                                                                    .w(px(280.0))
+                                                                    .child(picker)
+                                                                    .occlude(),
+                                                            )
+                                                            .with_priority(1),
+                                                        );
+                                                    }
+                                                    el
+                                                }),
+                                        )
+                                    }),
+                            )
+                            // Loading indicator
+                            .when(is_expanded && is_loading, |el| {
+                                el.child(
+                                    div().px(px(6.0)).py(px(2.0)).child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(accent_color)
+                                            .child("Loading..."),
+                                    ),
+                                )
+                            }),
                     )
-                    // Expanded content (placeholder for collections/tables)
+                    // Expanded content - show connection browser for MongoDB
                     .when(is_expanded, |el| {
-                        el.child(
-                            div()
-                                .pl(px(36.0))
-                                .pr(px(8.0))
-                                .py(px(4.0))
-                                .text_size(px(12.0))
-                                .text_color(text_muted)
-                                .child("Connect to browse..."),
-                        )
+                        if db_type == DatabaseType::MongoDB {
+                            if let Some(browser) = self.connection_browsers.get(&conn_id) {
+                                el.child(
+                                    div()
+                                        .pl(px(28.0))
+                                        .pr(px(4.0))
+                                        .py(px(4.0))
+                                        .child(browser.clone()),
+                                )
+                            } else {
+                                el.child(
+                                    div()
+                                        .pl(px(36.0))
+                                        .pr(px(8.0))
+                                        .py(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(text_muted)
+                                        .child("Loading..."),
+                                )
+                            }
+                        } else {
+                            el.child(
+                                div()
+                                    .pl(px(36.0))
+                                    .pr(px(8.0))
+                                    .py(px(4.0))
+                                    .text_size(px(12.0))
+                                    .text_color(text_muted)
+                                    .child("Connect to browse..."),
+                            )
+                        }
                     })
             }))
             // Empty state

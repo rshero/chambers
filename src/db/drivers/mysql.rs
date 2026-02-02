@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use mysql_async::prelude::*;
 use std::time::Instant;
 
-use crate::db::connection::DatabaseType;
 use crate::db::driver::{ConnectionConfig, ConnectionInfo, DatabaseConnection};
 use crate::db::error::{ConnectionError, Result};
 
@@ -33,8 +32,6 @@ impl DatabaseConnection for MySqlConnection {
         let opts = mysql_async::Opts::from_url(&self.config.connection_string)
             .map_err(|e| ConnectionError::InvalidConnectionString(e.to_string()))?;
 
-        let db_name = opts.db_name().map(String::from);
-
         // Create pool with single connection
         let pool = mysql_async::Pool::new(opts);
 
@@ -62,11 +59,6 @@ impl DatabaseConnection for MySqlConnection {
         Ok(ConnectionInfo {
             server_version: version.map(|v| format!("MySQL {}", v)),
             latency_ms: latency,
-            database_name: db_name,
         })
-    }
-
-    fn driver(&self) -> DatabaseType {
-        DatabaseType::MySQL
     }
 }

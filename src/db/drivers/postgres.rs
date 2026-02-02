@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use std::time::Instant;
 use tokio_postgres::NoTls;
 
-use crate::db::connection::DatabaseType;
 use crate::db::driver::{ConnectionConfig, ConnectionInfo, DatabaseConnection};
 use crate::db::error::{ConnectionError, Result};
 
@@ -54,26 +53,9 @@ impl DatabaseConnection for PostgresConnection {
         let version: String = row.get(0);
         let latency = start.elapsed().as_millis() as u64;
 
-        // Extract database name from connection string
-        let db_name = url::Url::parse(&self.config.connection_string)
-            .ok()
-            .and_then(|u| {
-                let path = u.path();
-                if path.len() > 1 {
-                    Some(path[1..].to_string())
-                } else {
-                    None
-                }
-            });
-
         Ok(ConnectionInfo {
             server_version: Some(version),
             latency_ms: latency,
-            database_name: db_name,
         })
-    }
-
-    fn driver(&self) -> DatabaseType {
-        DatabaseType::PostgreSQL
     }
 }
