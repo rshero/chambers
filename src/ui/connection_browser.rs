@@ -444,7 +444,6 @@ impl Render for ConnectionBrowser {
         let text_muted = rgb(0x808080);
         let hover_bg = rgb(0x252525);
         let accent_color = rgb(0x0078d4);
-        let selected_bg = rgb(0x0e4a7a);
         let error_color = rgb(0xf44336);
 
         // Rebuild flat items if dirty (BEFORE render, not during)
@@ -567,7 +566,6 @@ impl Render for ConnectionBrowser {
                                     text_muted,
                                     hover_bg,
                                     accent_color,
-                                    selected_bg,
                                     error_color,
                                     cx,
                                     browser,
@@ -590,7 +588,6 @@ fn render_flat_item(
     text_muted: Rgba,
     hover_bg: Rgba,
     accent_color: Rgba,
-    selected_bg: Rgba,
     error_color: Rgba,
     cx: &mut Context<ConnectionBrowser>,
     _browser: &ConnectionBrowser,
@@ -696,11 +693,21 @@ fn render_flat_item(
                 .pr(px(8.0))
                 .cursor_pointer()
                 .rounded(px(4.0))
-                .when(selected, |el| el.bg(selected_bg))
-                .hover(|s| s.bg(if selected { selected_bg } else { hover_bg }))
+                // Subtle selection: light background tint instead of solid color
+                .when(selected, |el| el.bg(rgba(0x0078d420))) // 12% opacity accent
+                .hover(|s| s.bg(hover_bg))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.select_collection(&db, &coll, cx);
                 }))
+                // Left accent bar for selected item
+                .child(
+                    div()
+                        .w(px(2.0))
+                        .h(px(14.0))
+                        .rounded(px(1.0))
+                        .when(selected, |el| el.bg(accent_color))
+                        .when(!selected, |el| el.bg(gpui::transparent_black())),
+                )
                 // Collection icon
                 .child(
                     svg()
