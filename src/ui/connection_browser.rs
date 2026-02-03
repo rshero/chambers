@@ -1,4 +1,5 @@
 use gpui::{prelude::*, *};
+use std::collections::{HashMap, HashSet};
 
 use crate::db::driver::{CollectionInfo, DatabaseInfo};
 use crate::db::{Connection, ConnectionConfig, DatabaseType};
@@ -8,24 +9,50 @@ use crate::ui::tooltip::Tooltip;
 /// Maximum number of databases to show initially
 const MAX_DATABASES_SHOWN: usize = 10;
 
-/// Threshold for using virtual list (uniform_list) instead of regular iteration
-const VIRTUAL_LIST_THRESHOLD: usize = 50;
+/// Uniform item height for virtual list (both databases and collections)
+const ITEM_HEIGHT: f32 = 26.0;
 
-/// Pre-calculated item height for uniform_list (in pixels)
-const DATABASE_ITEM_HEIGHT: f32 = 28.0;
-
-/// Pre-computed database item for efficient rendering
-/// Stores pre-calculated values to avoid computation during render
+/// Pre-computed flat tree item for efficient rendering
+/// All strings are pre-computed SharedStrings to avoid allocations during render
 #[derive(Clone)]
-struct DatabaseRenderItem {
-    /// Stable unique key derived from database name hash
-    stable_key: SharedString,
-    /// Index in the original databases vec
-    source_index: usize,
-    /// Pre-formatted size string (e.g., "1.2 GB")
-    formatted_size: Option<SharedString>,
-    /// Database name as SharedString (avoids cloning)
-    name: SharedString,
+enum FlatTreeItem {
+    Database {
+        /// Stable unique key for element ID
+        stable_key: SharedString,
+        /// Database name (pre-computed SharedString)
+        name: SharedString,
+        /// Pre-formatted size string (e.g., "1.2 GB")
+        formatted_size: Option<SharedString>,
+        /// Whether this database is expanded
+        is_expanded: bool,
+        /// Whether collections are currently loading
+        is_loading: bool,
+    },
+    Collection {
+        /// Stable unique key for element ID
+        stable_key: SharedString,
+        /// Parent database name (for click handler)
+        db_name: SharedString,
+        /// Collection name (pre-computed SharedString)
+        name: SharedString,
+        /// Pre-formatted document count
+        doc_count: Option<SharedString>,
+        /// Whether this collection is selected
+        is_selected: bool,
+    },
+    /// Loading placeholder shown when collections are loading
+    Loading {
+        stable_key: SharedString,
+    },
+    /// Error placeholder shown when collection loading failed
+    Error {
+        stable_key: SharedString,
+        db_name: SharedString,
+    },
+    /// Empty placeholder shown when database has no collections
+    Empty {
+        stable_key: SharedString,
+    },
 }
 
 /// Event emitted when a database is selected
@@ -48,25 +75,32 @@ pub enum LoadingState {
     Error(String),
 }
 
+/// Loading state for collections (per database)
+#[derive(Clone, PartialEq)]
+pub enum CollectionLoadingState {
+    NotLoaded,
+    Loading,
+    Loaded,
+    Error(String),
+}
+
 /// The connection browser component that shows databases and collections
 pub struct ConnectionBrowser {
     connection: Connection,
+    // Source data
     databases: Vec<DatabaseInfo>,
-    collections: std::collections::HashMap<String, Vec<CollectionInfo>>,
+    collections: HashMap<String, Vec<CollectionInfo>>,
+    expanded_databases: HashSet<String>,
+    collection_loading_states: HashMap<String, CollectionLoadingState>,
     selected_database: Option<String>,
-    /// Current loading state
+    selected_collection: Option<(String, String)>,
     pub loading_state: LoadingState,
-    /// Which databases are currently visible (filtered by user selection)
     visible_databases: Vec<String>,
-    /// Whether all databases should be shown (vs just visible_databases)
     show_all_databases: bool,
-    /// Pre-computed render items (computed once when databases change)
-    /// This avoids re-computing sizes and keys during every render
-    render_cache: Vec<DatabaseRenderItem>,
-    /// Cached visible indices (recomputed when visibility changes)
-    visible_indices_cache: Vec<usize>,
-    /// Flag to track if cache needs rebuild
-    cache_dirty: bool,
+    
+    // Pre-computed render cache (flattened tree)
+    flat_items: Vec<FlatTreeItem>,
+    flat_items_dirty: bool,
 }
 
 impl ConnectionBrowser {
@@ -74,20 +108,17 @@ impl ConnectionBrowser {
         Self {
             connection,
             databases: Vec::new(),
-            collections: std::collections::HashMap::new(),
+            collections: HashMap::new(),
+            expanded_databases: HashSet::new(),
+            collection_loading_states: HashMap::new(),
             selected_database: None,
+            selected_collection: None,
             loading_state: LoadingState::Idle,
             visible_databases: Vec::new(),
             show_all_databases: false,
-            render_cache: Vec::new(),
-            visible_indices_cache: Vec::new(),
-            cache_dirty: true,
+            flat_items: Vec::new(),
+            flat_items_dirty: true,
         }
-    }
-
-    /// Get the list of all database names
-    pub fn database_names(&self) -> Vec<String> {
-        self.databases.iter().map(|db| db.name.clone()).collect()
     }
 
     /// Get the count of databases
@@ -104,67 +135,34 @@ impl ConnectionBrowser {
         }
     }
 
+    /// Get the list of all database names
+    pub fn database_names(&self) -> Vec<String> {
+        self.databases.iter().map(|db| db.name.clone()).collect()
+    }
+
     /// Get the list of visible database names
     pub fn visible_databases(&self) -> Vec<String> {
         self.visible_databases.clone()
     }
 
     /// Set which databases are visible (for filtering)
-    /// Batches the update - only calls notify once
     pub fn set_visible_databases(&mut self, databases: Vec<String>, cx: &mut Context<Self>) {
         self.visible_databases = databases;
         self.show_all_databases = false;
-        self.cache_dirty = true; // Mark cache as needing rebuild
-        cx.notify(); // Single notification after all state changes
+        self.flat_items_dirty = true;
+        cx.notify();
     }
 
     /// Set show_all state
     pub fn set_show_all(&mut self, show_all: bool, cx: &mut Context<Self>) {
         self.show_all_databases = show_all;
-        self.cache_dirty = true;
+        self.flat_items_dirty = true;
         cx.notify();
     }
 
     /// Check if currently showing all databases
     pub fn is_showing_all(&self) -> bool {
         self.show_all_databases
-    }
-
-    /// Rebuild render cache from current databases
-    /// Called lazily when cache_dirty is true
-    fn rebuild_render_cache(&mut self) {
-        self.render_cache = self
-            .databases
-            .iter()
-            .enumerate()
-            .map(|(i, db)| DatabaseRenderItem {
-                stable_key: SharedString::from(format!("db-{:016x}", Self::hash_name(&db.name))),
-                source_index: i,
-                formatted_size: db.size_bytes.map(|s| SharedString::from(Self::format_bytes(s))),
-                name: SharedString::from(db.name.clone()),
-            })
-            .collect();
-
-        self.rebuild_visible_indices_cache();
-    }
-
-    /// Rebuild visible indices cache based on current filter
-    fn rebuild_visible_indices_cache(&mut self) {
-        self.visible_indices_cache = if self.show_all_databases {
-            (0..self.render_cache.len()).collect()
-        } else {
-            self.render_cache
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| {
-                    self.visible_databases
-                        .iter()
-                        .any(|v| v.as_str() == item.name.as_ref())
-                })
-                .map(|(i, _)| i)
-                .collect()
-        };
-        self.cache_dirty = false;
     }
 
     /// Simple hash function for stable keys
@@ -175,13 +173,106 @@ impl ConnectionBrowser {
         hasher.finish()
     }
 
+    fn format_bytes(bytes: u64) -> String {
+        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+        let mut size = bytes as f64;
+        let mut unit_index = 0;
+        while size >= 1024.0 && unit_index < UNITS.len() - 1 {
+            size /= 1024.0;
+            unit_index += 1;
+        }
+        format!("{:.1} {}", size, UNITS[unit_index])
+    }
+
+    /// Rebuild the flattened tree cache
+    /// Called ONCE when state changes, NOT during render
+    fn rebuild_flat_items(&mut self) {
+        self.flat_items.clear();
+        
+        // Determine which databases to show
+        let visible_db_names: HashSet<&str> = if self.show_all_databases {
+            self.databases.iter().map(|db| db.name.as_str()).collect()
+        } else {
+            self.visible_databases.iter().map(|s| s.as_str()).collect()
+        };
+
+        for db in &self.databases {
+            // Skip if not in visible set
+            if !visible_db_names.contains(db.name.as_str()) {
+                continue;
+            }
+
+            let is_expanded = self.expanded_databases.contains(&db.name);
+            let coll_state = self.collection_loading_states
+                .get(&db.name)
+                .cloned()
+                .unwrap_or(CollectionLoadingState::NotLoaded);
+            let is_loading = matches!(coll_state, CollectionLoadingState::Loading);
+            let has_error = matches!(coll_state, CollectionLoadingState::Error(_));
+
+            // Add database row
+            self.flat_items.push(FlatTreeItem::Database {
+                stable_key: SharedString::from(format!("db-{:016x}", Self::hash_name(&db.name))),
+                name: SharedString::from(db.name.clone()),
+                formatted_size: db.size_bytes.map(|s| SharedString::from(Self::format_bytes(s))),
+                is_expanded,
+                is_loading,
+            });
+
+            // Add children if expanded
+            if is_expanded {
+                if is_loading {
+                    // Loading placeholder
+                    self.flat_items.push(FlatTreeItem::Loading {
+                        stable_key: SharedString::from(format!("loading-{}", db.name)),
+                    });
+                } else if has_error {
+                    // Error placeholder
+                    self.flat_items.push(FlatTreeItem::Error {
+                        stable_key: SharedString::from(format!("error-{}", db.name)),
+                        db_name: SharedString::from(db.name.clone()),
+                    });
+                } else if let Some(colls) = self.collections.get(&db.name) {
+                    if colls.is_empty() {
+                        // Empty placeholder
+                        self.flat_items.push(FlatTreeItem::Empty {
+                            stable_key: SharedString::from(format!("empty-{}", db.name)),
+                        });
+                    } else {
+                        // Collection rows
+                        for (idx, coll) in colls.iter().enumerate() {
+                            let is_selected = self.selected_collection
+                                .as_ref()
+                                .map(|(d, c)| d == &db.name && c == &coll.name)
+                                .unwrap_or(false);
+
+                            self.flat_items.push(FlatTreeItem::Collection {
+                                stable_key: SharedString::from(format!(
+                                    "coll-{:016x}-{}",
+                                    Self::hash_name(&db.name),
+                                    idx
+                                )),
+                                db_name: SharedString::from(db.name.clone()),
+                                name: SharedString::from(coll.name.clone()),
+                                doc_count: coll.document_count.map(|c| SharedString::from(c.to_string())),
+                                is_selected,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        self.flat_items_dirty = false;
+    }
+
     pub fn load_databases(&mut self, cx: &mut Context<Self>) {
         if self.connection.db_type != DatabaseType::MongoDB {
             return;
         }
 
         self.loading_state = LoadingState::LoadingDatabases;
-        // Don't notify yet - wait for all state changes
+        self.flat_items_dirty = true;
 
         let conn_string = self.connection.get_connection_string();
         let config = ConnectionConfig::new(self.connection.db_type, conn_string);
@@ -206,7 +297,6 @@ impl ConnectionBrowser {
                         this.update(cx, |browser, cx| {
                             match result {
                                 Ok(databases) => {
-                                    // Batch all state updates together
                                     browser.visible_databases = databases
                                         .iter()
                                         .take(MAX_DATABASES_SHOWN)
@@ -214,15 +304,12 @@ impl ConnectionBrowser {
                                         .collect();
                                     browser.databases = databases;
                                     browser.loading_state = LoadingState::Idle;
-                                    browser.cache_dirty = true;
-                                    // Rebuild cache immediately for better first render
-                                    browser.rebuild_render_cache();
                                 }
                                 Err(e) => {
                                     browser.loading_state = LoadingState::Error(e.to_string());
                                 }
                             }
-                            // Single notify after all state changes (batched update)
+                            browser.flat_items_dirty = true;
                             cx.notify();
                         }).ok();
                         break;
@@ -233,6 +320,7 @@ impl ConnectionBrowser {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         this.update(cx, |browser, cx| {
                             browser.loading_state = LoadingState::Error("Failed to load databases".to_string());
+                            browser.flat_items_dirty = true;
                             cx.notify();
                         }).ok();
                         break;
@@ -240,316 +328,145 @@ impl ConnectionBrowser {
                 }
             }
         }).detach();
-        
-        // Single notify for loading state change
+
         cx.notify();
     }
 
-    fn format_bytes(bytes: u64) -> String {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-        let mut size = bytes as f64;
-        let mut unit_index = 0;
-        while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-            size /= 1024.0;
-            unit_index += 1;
+    /// Toggle database expansion and load collections if needed
+    pub fn toggle_database(&mut self, db_name: &str, cx: &mut Context<Self>) {
+        let db_name = db_name.to_string();
+
+        if self.expanded_databases.contains(&db_name) {
+            self.expanded_databases.remove(&db_name);
+            self.selected_database = None;
+        } else {
+            self.expanded_databases.insert(db_name.clone());
+            self.selected_database = Some(db_name.clone());
+
+            let load_state = self.collection_loading_states
+                .get(&db_name)
+                .cloned()
+                .unwrap_or(CollectionLoadingState::NotLoaded);
+
+            if matches!(load_state, CollectionLoadingState::NotLoaded | CollectionLoadingState::Error(_)) {
+                self.load_collections(&db_name, cx);
+            }
         }
-        format!("{:.1} {}", size, UNITS[unit_index])
+        
+        self.flat_items_dirty = true;
+        cx.notify();
     }
 
-    /// Render a loading spinner
-    fn render_loading_spinner() -> impl IntoElement {
-        let accent_color = rgb(0x0078d4);
-        let dot_count: usize = 3;
-        let dot_size = 4.0_f32;
-        let spacing = 3.0_f32;
+    /// Load collections for a specific database
+    fn load_collections(&mut self, db_name: &str, cx: &mut Context<Self>) {
+        let db_name = db_name.to_string();
 
-        div()
-            .id("loading-spinner")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(spacing))
-            .children((0..dot_count).map(move |i| {
-                let phase_offset = i as f32 * 0.33;
-                
-                div()
-                    .id(("spinner-dot", i))
-                    .w(px(dot_size))
-                    .h(px(dot_size))
-                    .rounded_full()
-                    .bg(accent_color)
-                    .with_animation(
-                        ("spinner-dot-anim", i),
-                        Animation::new(std::time::Duration::from_millis(1200)).repeat(),
-                        move |el, delta| {
-                            let adjusted_delta = (delta + phase_offset) % 1.0;
-                            let pulse = ((adjusted_delta * 2.0 * std::f32::consts::PI).sin() + 1.0) / 2.0;
-                            let opacity = 0.3 + (pulse * 0.7);
-                            let scale = 0.7 + (pulse * 0.3);
-                            
-                            el.opacity(opacity)
-                                .w(px(dot_size * scale))
-                                .h(px(dot_size * scale))
-                        },
-                    )
-            }))
-    }
+        self.collection_loading_states
+            .insert(db_name.clone(), CollectionLoadingState::Loading);
+        self.flat_items_dirty = true;
 
-    /// Optimized render using pre-computed cache and stable keys
-    fn render_database_item_cached(
-        item: &DatabaseRenderItem,
-        db: &DatabaseInfo,
-        is_selected: bool,
-        is_loading_collections: bool,
-        collections: &std::collections::HashMap<String, Vec<CollectionInfo>>,
-    ) -> impl IntoElement {
-        let text_color = rgb(0xe0e0e0);
-        let text_muted = rgb(0x808080);
-        let selected_bg = rgb(0x0e4a7a);
-        let hover_bg = rgb(0x252525);
-        let accent_color = rgb(0x0078d4);
+        let conn_string = self.connection.get_connection_string();
+        let config = ConnectionConfig::new(self.connection.db_type, conn_string);
+        let db_name_clone = db_name.clone();
 
-        // Use stable key from cache (avoids format! during render)
-        let item_id = item.stable_key.clone();
-        let db_name = item.name.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
 
-        div()
-            .id(item_id)
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .w_full()
-            .h(px(DATABASE_ITEM_HEIGHT)) // Fixed height for virtual list
-            .px(px(8.0))
-            .py(px(4.0))
-            .cursor_pointer()
-            .rounded(px(4.0))
-            .when(is_selected, |el| el.bg(selected_bg))
-            .hover(|s| s.bg(if is_selected { selected_bg } else { hover_bg }))
-            // Database icon
-            .child(
-                svg()
-                    .path("icons/database-folder.svg")
-                    .size(px(14.0))
-                    .text_color(if is_selected { accent_color } else { text_muted })
-                    .flex_none(),
-            )
-            // Database name (uses pre-computed SharedString)
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(px(12.0))
-                    .text_color(if is_selected { accent_color } else { text_color })
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(db_name.clone()),
-            )
-            // Database size (uses pre-formatted string from cache)
-            .when_some(item.formatted_size.clone(), |el, size| {
-                el.child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(text_muted)
-                        .child(size),
-                )
-            })
-            // Loading indicator or expand icon
-            .child(
-                if is_loading_collections {
-                    Self::render_loading_spinner().into_any_element()
-                } else {
-                    svg()
-                        .path(if is_selected {
-                            "icons/chevron-down.svg"
-                        } else {
-                            "icons/chevron-right.svg"
-                        })
-                        .size(px(10.0))
-                        .text_color(text_muted)
-                        .flex_none()
-                        .into_any_element()
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let result = rt.block_on(async {
+                match create_connection(config) {
+                    Ok(conn) => conn.list_collections(&db_name_clone).await,
+                    Err(e) => Err(e),
                 }
-            )
-            // Collections list when selected (rendered inline for simplicity)
-            .when(is_selected, |el| {
-                el.child(
-                    div()
-                        .pl(px(22.0))
-                        .w_full()
-                        .child(Self::render_collections_list_static(&db.name, collections))
-                )
-            })
+            });
+            tx.send(result).ok();
+        });
+
+        let db_name_for_task = db_name.clone();
+        cx.spawn(async move |this, cx| {
+            loop {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        this.update(cx, |browser, cx| {
+                            match result {
+                                Ok(collections) => {
+                                    browser.collections.insert(db_name_for_task.clone(), collections);
+                                    browser.collection_loading_states
+                                        .insert(db_name_for_task.clone(), CollectionLoadingState::Loaded);
+                                }
+                                Err(e) => {
+                                    browser.collection_loading_states
+                                        .insert(db_name_for_task.clone(), CollectionLoadingState::Error(e.to_string()));
+                                }
+                            }
+                            browser.flat_items_dirty = true;
+                            cx.notify();
+                        }).ok();
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        this.update(cx, |browser, cx| {
+                            browser.collection_loading_states
+                                .insert(db_name_for_task.clone(), CollectionLoadingState::Error("Connection lost".to_string()));
+                            browser.flat_items_dirty = true;
+                            cx.notify();
+                        }).ok();
+                        break;
+                    }
+                }
+            }
+        }).detach();
+
+        cx.notify();
     }
 
-    /// Static version for use with uniform_list
-    fn render_collections_list_static(
-        db_name: &str,
-        collections_map: &std::collections::HashMap<String, Vec<CollectionInfo>>,
-    ) -> impl IntoElement {
-        let text_color = rgb(0xe0e0e0);
-        let text_muted = rgb(0x808080);
-        let hover_bg = rgb(0x252525);
+    /// Select a collection and emit event
+    pub fn select_collection(&mut self, db_name: &str, coll_name: &str, cx: &mut Context<Self>) {
+        self.selected_collection = Some((db_name.to_string(), coll_name.to_string()));
+        self.flat_items_dirty = true;
+        cx.emit(CollectionSelected(db_name.to_string(), coll_name.to_string()));
+        cx.notify();
+    }
 
-        let collections = collections_map.get(db_name).cloned().unwrap_or_default();
-
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .children(collections.iter().enumerate().map(|(index, coll)| {
-                let coll_name = coll.name.clone();
-                let doc_count = coll.document_count;
-
-                // Use index-based ID for performance
-                let coll_id = SharedString::from(format!("coll-{}", index));
-
-                div()
-                    .id(coll_id)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .w_full()
-                    .px(px(6.0))
-                    .py(px(3.0))
-                    .cursor_pointer()
-                    .rounded(px(4.0))
-                    .hover(|s| s.bg(hover_bg))
-                    // Collection icon
-                    .child(
-                        svg()
-                            .path("icons/collection.svg")
-                            .size(px(12.0))
-                            .text_color(text_muted)
-                            .flex_none(),
-                    )
-                    // Collection name
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.0))
-                            .text_color(text_color)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(coll_name),
-                    )
-                    // Document count
-                    .when_some(doc_count, |el, count| {
-                        el.child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(text_muted)
-                                .child(format!("{}", count)),
-                        )
-                    })
-            }))
-            .when(collections.is_empty(), |el| {
-                el.child(
-                    div()
-                        .px(px(6.0))
-                        .py(px(3.0))
-                        .text_size(px(11.0))
-                        .text_color(text_muted)
-                        .child("No collections"),
-                )
-            })
+    /// Retry loading collections for a database
+    fn retry_load_collections(&mut self, db_name: &str, cx: &mut Context<Self>) {
+        self.load_collections(db_name, cx);
     }
 }
 
 impl Render for ConnectionBrowser {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Colors - defined once at top
+        let text_color = rgb(0xe0e0e0);
         let text_muted = rgb(0x808080);
+        let hover_bg = rgb(0x252525);
+        let accent_color = rgb(0x0078d4);
+        let selected_bg = rgb(0x0e4a7a);
+        let error_color = rgb(0xf44336);
 
-        // Rebuild cache if dirty (lazy rebuild on state change)
-        if self.cache_dirty && !self.render_cache.is_empty() {
-            self.rebuild_visible_indices_cache();
-        } else if self.cache_dirty && !self.databases.is_empty() {
-            self.rebuild_render_cache();
+        // Rebuild flat items if dirty (BEFORE render, not during)
+        if self.flat_items_dirty {
+            self.rebuild_flat_items();
         }
 
-        let visible_count = self.visible_indices_cache.len();
-        let use_virtual_list = visible_count > VIRTUAL_LIST_THRESHOLD;
-
-        // Clone only what we need for rendering
-        let selected_database = self.selected_database.clone();
-        let collections = self.collections.clone();
-
-        div()
-            .id("connection-browser")
-            .flex()
-            .flex_col()
-            .w_full()
-            // Use virtual list for large datasets (>50 items)
-            .when(use_virtual_list, |el| {
-                let visible_indices = self.visible_indices_cache.clone();
-                let render_cache = self.render_cache.clone();
-                let databases = self.databases.clone();
-                let selected_db = selected_database.clone();
-                let colls = collections.clone();
-
-                el.child(
-                    div()
-                        .id("database-virtual-list-container")
-                        .h(px((visible_count.min(20) as f32) * DATABASE_ITEM_HEIGHT)) // Show max 20 items height
-                        .overflow_hidden()
-                        .child(
-                            uniform_list(
-                                "database-list",
-                                visible_count,
-                                cx.processor(move |_browser, visible_range: std::ops::Range<usize>, _window, _cx| {
-                                    visible_range
-                                        .filter_map(|ix| {
-                                            let cache_idx = *visible_indices.get(ix)?;
-                                            let item = render_cache.get(cache_idx)?;
-                                            let db = databases.get(item.source_index)?;
-                                            let is_selected = selected_db.as_ref().map(|s| s == &db.name).unwrap_or(false);
-
-                                            Some(
-                                                Self::render_database_item_cached(
-                                                    item,
-                                                    db,
-                                                    is_selected,
-                                                    false,
-                                                    &colls,
-                                                )
-                                                .into_any_element()
-                                            )
-                                        })
-                                        .collect()
-                                }),
-                            )
-                            .size_full()
-                        )
-                )
-            })
-            // Use regular iteration for small datasets (≤50 items) - avoids virtual list overhead
-            .when(!use_virtual_list, |el| {
-                el.children(self.visible_indices_cache.iter().filter_map(|&cache_idx| {
-                    let item = self.render_cache.get(cache_idx)?;
-                    let db = self.databases.get(item.source_index)?;
-                    let is_selected = selected_database.as_ref().map(|s| s == &db.name).unwrap_or(false);
-
-                    Some(Self::render_database_item_cached(
-                        item,
-                        db,
-                        is_selected,
-                        false,
-                        &collections,
-                    ))
-                }))
-            })
-            // Loading state - shown at top when loading
-            .when(matches!(self.loading_state, LoadingState::LoadingDatabases), |el| {
-                el.child(
+        // Loading databases state
+        if matches!(self.loading_state, LoadingState::LoadingDatabases) {
+            return div()
+                .id("connection-browser")
+                .flex()
+                .flex_col()
+                .w_full()
+                .child(
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(8.0))
                         .px(px(8.0))
-                        .py(px(4.0))
-                        .child(Self::render_loading_spinner())
+                        .py(px(8.0))
                         .child(
                             div()
                                 .text_size(px(11.0))
@@ -557,9 +474,17 @@ impl Render for ConnectionBrowser {
                                 .child("Loading databases..."),
                         ),
                 )
-            })
-            .when(matches!(self.loading_state, LoadingState::Error(_)), |el| {
-                el.child(
+                .into_any_element();
+        }
+
+        // Error state
+        if matches!(self.loading_state, LoadingState::Error(_)) {
+            return div()
+                .id("connection-browser")
+                .flex()
+                .flex_col()
+                .w_full()
+                .child(
                     div()
                         .flex()
                         .flex_row()
@@ -570,7 +495,7 @@ impl Render for ConnectionBrowser {
                         .child(
                             div()
                                 .text_size(px(11.0))
-                                .text_color(rgb(0xf44336))
+                                .text_color(error_color)
                                 .child("Failed to load databases"),
                         )
                         .child(
@@ -592,21 +517,288 @@ impl Render for ConnectionBrowser {
                                     svg()
                                         .path("icons/refresh.svg")
                                         .size(px(14.0))
-                                        .text_color(rgb(0x808080))
-                                        .hover(|s| s.text_color(rgb(0xe0e0e0))),
+                                        .text_color(text_muted),
                                 ),
                         ),
                 )
-            })
-            .when(self.databases.is_empty() && matches!(self.loading_state, LoadingState::Idle), |el| {
-                el.child(
+                .into_any_element();
+        }
+
+        // Empty state
+        if self.databases.is_empty() {
+            return div()
+                .id("connection-browser")
+                .flex()
+                .flex_col()
+                .w_full()
+                .child(
                     div()
                         .px(px(8.0))
                         .py(px(4.0))
                         .text_size(px(11.0))
                         .text_color(text_muted)
-                        .child("Click to load databases"),
+                        .child("No databases"),
                 )
-            })
+                .into_any_element();
+        }
+
+        // Main tree view with uniform_list for virtualization
+        let item_count = self.flat_items.len();
+        let flat_items = self.flat_items.clone(); // Single clone for the processor
+
+        div()
+            .id("connection-browser")
+            .flex()
+            .flex_col()
+            .w_full()
+            .flex_1()
+            .overflow_hidden()
+            .child(
+                uniform_list(
+                    "database-tree",
+                    item_count,
+                    cx.processor(move |browser, range: std::ops::Range<usize>, _window, cx| {
+                        range
+                            .filter_map(|ix| {
+                                let item = flat_items.get(ix)?;
+                                Some(render_flat_item(
+                                    item,
+                                    text_color,
+                                    text_muted,
+                                    hover_bg,
+                                    accent_color,
+                                    selected_bg,
+                                    error_color,
+                                    cx,
+                                    browser,
+                                ))
+                            })
+                            .collect()
+                    }),
+                )
+                .size_full()
+                .with_sizing_behavior(ListSizingBehavior::Infer),
+            )
+            .into_any_element()
+    }
+}
+
+/// Render a single flat tree item - kept lightweight, uses pre-computed data
+fn render_flat_item(
+    item: &FlatTreeItem,
+    text_color: Rgba,
+    text_muted: Rgba,
+    hover_bg: Rgba,
+    accent_color: Rgba,
+    selected_bg: Rgba,
+    error_color: Rgba,
+    cx: &mut Context<ConnectionBrowser>,
+    _browser: &ConnectionBrowser,
+) -> AnyElement {
+    match item {
+        FlatTreeItem::Database {
+            stable_key,
+            name,
+            formatted_size,
+            is_expanded,
+            is_loading,
+        } => {
+            let db_name = name.to_string();
+            let is_exp = *is_expanded;
+            let is_load = *is_loading;
+
+            div()
+                .id(stable_key.clone())
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .w_full()
+                .h(px(ITEM_HEIGHT))
+                .px(px(8.0))
+                .cursor_pointer()
+                .rounded(px(4.0))
+                .hover(|s| s.bg(hover_bg))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_database(&db_name, cx);
+                }))
+                // Chevron
+                .child(
+                    svg()
+                        .path(if is_exp {
+                            "icons/chevron-down.svg"
+                        } else {
+                            "icons/chevron-right.svg"
+                        })
+                        .size(px(10.0))
+                        .text_color(text_muted)
+                        .flex_none(),
+                )
+                // Database icon
+                .child(
+                    svg()
+                        .path("icons/database-folder.svg")
+                        .size(px(14.0))
+                        .text_color(if is_exp { accent_color } else { text_muted })
+                        .flex_none(),
+                )
+                // Name
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.0))
+                        .text_color(if is_exp { accent_color } else { text_color })
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(name.clone()),
+                )
+                // Size
+                .when_some(formatted_size.clone(), |el, size| {
+                    el.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(text_muted)
+                            .child(size),
+                    )
+                })
+                // Loading indicator
+                .when(is_load, |el| {
+                    el.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(text_muted)
+                            .child("..."),
+                    )
+                })
+                .into_any_element()
+        }
+
+        FlatTreeItem::Collection {
+            stable_key,
+            db_name,
+            name,
+            doc_count,
+            is_selected,
+        } => {
+            let db = db_name.to_string();
+            let coll = name.to_string();
+            let selected = *is_selected;
+
+            div()
+                .id(stable_key.clone())
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .w_full()
+                .h(px(ITEM_HEIGHT))
+                .pl(px(32.0)) // Indentation for collections
+                .pr(px(8.0))
+                .cursor_pointer()
+                .rounded(px(4.0))
+                .when(selected, |el| el.bg(selected_bg))
+                .hover(|s| s.bg(if selected { selected_bg } else { hover_bg }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_collection(&db, &coll, cx);
+                }))
+                // Collection icon
+                .child(
+                    svg()
+                        .path("icons/collection.svg")
+                        .size(px(12.0))
+                        .text_color(if selected { accent_color } else { text_muted })
+                        .flex_none(),
+                )
+                // Name
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(11.0))
+                        .text_color(if selected { accent_color } else { text_color })
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(name.clone()),
+                )
+                // Doc count
+                .when_some(doc_count.clone(), |el, count| {
+                    el.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(text_muted)
+                            .child(count),
+                    )
+                })
+                .into_any_element()
+        }
+
+        FlatTreeItem::Loading { stable_key } => {
+            div()
+                .id(stable_key.clone())
+                .flex()
+                .flex_row()
+                .items_center()
+                .w_full()
+                .h(px(ITEM_HEIGHT))
+                .pl(px(32.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(text_muted)
+                        .child("Loading collections..."),
+                )
+                .into_any_element()
+        }
+
+        FlatTreeItem::Error { stable_key, db_name } => {
+            let db = db_name.to_string();
+
+            div()
+                .id(stable_key.clone())
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .w_full()
+                .h(px(ITEM_HEIGHT))
+                .pl(px(32.0))
+                .pr(px(8.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(error_color)
+                        .child("Failed to load"),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("retry-{}", db_name)))
+                        .cursor_pointer()
+                        .text_size(px(10.0))
+                        .text_color(accent_color)
+                        .hover(|s| s.text_color(text_color))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.retry_load_collections(&db, cx);
+                        }))
+                        .child("Retry"),
+                )
+                .into_any_element()
+        }
+
+        FlatTreeItem::Empty { stable_key } => {
+            div()
+                .id(stable_key.clone())
+                .flex()
+                .flex_row()
+                .items_center()
+                .w_full()
+                .h(px(ITEM_HEIGHT))
+                .pl(px(32.0))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(text_muted)
+                        .child("No collections"),
+                )
+                .into_any_element()
+        }
     }
 }

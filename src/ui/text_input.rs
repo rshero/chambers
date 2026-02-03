@@ -2,9 +2,9 @@ use std::ops::Range;
 
 use gpui::{
     div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size, App, Bounds, ClipboardItem,
-    Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
-    Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
+    Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, PaintQuad, Pixels,
+    Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use unicode_segmentation::*;
 
@@ -60,6 +60,11 @@ pub fn register_text_input_bindings(cx: &mut App) {
         KeyBinding::new("shift-end", SelectToEnd, Some("TextInput")),
     ]);
 }
+
+/// Event emitted when input text changes
+pub struct InputChanged;
+
+impl EventEmitter<InputChanged> for TextInput {}
 
 /// A text input field with cursor, selection, and keyboard handling
 pub struct TextInput {
@@ -475,6 +480,7 @@ impl EntityInputHandler for TextInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        cx.emit(InputChanged);
         cx.notify();
     }
 

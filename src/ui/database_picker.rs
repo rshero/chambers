@@ -90,6 +90,12 @@ impl DatabasePicker {
     fn toggle_show_all(&mut self, cx: &mut Context<Self>) {
         self.show_all = !self.show_all;
 
+        // When unchecking "Show All", clear all visible databases
+        // When checking "Show All", keep the list (it will show all anyway)
+        if !self.show_all {
+            self.visible_databases.clear();
+        }
+
         cx.emit(DatabaseVisibilityChanged {
             visible_databases: self.visible_databases.clone(),
             show_all: self.show_all,

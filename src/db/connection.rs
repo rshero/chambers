@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Supported database types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DatabaseType {
     MongoDB,
     Redis,

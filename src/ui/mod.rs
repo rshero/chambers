@@ -2,6 +2,7 @@ pub mod connection_browser;
 pub mod connection_modal;
 pub mod database_menu;
 pub mod database_picker;
+pub mod filter_menu;
 pub mod sidebar;
 pub mod text_input;
 pub mod title_bar;

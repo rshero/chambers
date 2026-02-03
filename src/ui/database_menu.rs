@@ -50,6 +50,7 @@ impl Render for DatabaseMenu {
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.dismiss(cx);
             }))
+            .occlude()
             .bg(bg)
             .border_1()
             .border_color(border_color)
