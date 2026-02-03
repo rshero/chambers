@@ -88,19 +88,22 @@ impl DatabasePicker {
     }
 
     fn toggle_show_all(&mut self, cx: &mut Context<Self>) {
+        // Update local state immediately
         self.show_all = !self.show_all;
 
         // When unchecking "Show All", clear all visible databases
-        // When checking "Show All", keep the list (it will show all anyway)
         if !self.show_all {
             self.visible_databases.clear();
         }
 
+        // Notify first to ensure checkbox updates visually
+        cx.notify();
+
+        // Then emit event for subscribers
         cx.emit(DatabaseVisibilityChanged {
             visible_databases: self.visible_databases.clone(),
             show_all: self.show_all,
         });
-        cx.notify();
     }
 
     fn toggle_database(&mut self, db_name: String, cx: &mut Context<Self>) {
