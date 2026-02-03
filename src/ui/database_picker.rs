@@ -5,6 +5,18 @@ use crate::ui::text_input::TextInput;
 /// Maximum number of items to show in picker (like Zed's file finder limit)
 const MAX_PICKER_ITEMS: usize = 100;
 
+/// Pre-calculated item height for uniform_list
+const PICKER_ITEM_HEIGHT: f32 = 32.0;
+
+/// Pre-computed picker item for efficient rendering
+#[derive(Clone)]
+struct PickerRenderItem {
+    /// Stable key derived from database name hash
+    stable_key: SharedString,
+    /// Database name as SharedString (avoids cloning)
+    name: SharedString,
+}
+
 /// Event emitted when database visibility changes
 #[derive(Clone)]
 pub struct DatabaseVisibilityChanged {
@@ -22,8 +34,10 @@ pub struct DatabasePicker {
     visible_databases: Vec<String>,
     show_all: bool,
     search_input: Entity<TextInput>,
-    /// Cached filtered results to avoid recomputing during render
-    filtered_cache: Vec<String>,
+    /// Pre-computed render items (built once at construction)
+    render_items: Vec<PickerRenderItem>,
+    /// Cached filtered indices (recomputed when query changes)
+    filtered_indices: Vec<usize>,
     /// Last search query used for cache
     last_query: String,
 }
@@ -37,12 +51,17 @@ impl DatabasePicker {
     ) -> Self {
         let search_input = cx.new(|cx| TextInput::new(cx, "Search databases...", ""));
 
-        // Pre-compute initial filtered list (limited to MAX_PICKER_ITEMS)
-        let filtered_cache: Vec<String> = all_databases
+        // Pre-compute render items with stable keys (done once at construction)
+        let render_items: Vec<PickerRenderItem> = all_databases
             .iter()
-            .take(MAX_PICKER_ITEMS)
-            .cloned()
+            .map(|name| PickerRenderItem {
+                stable_key: SharedString::from(format!("picker-{:016x}", Self::hash_name(name))),
+                name: SharedString::from(name.clone()),
+            })
             .collect();
+
+        // Initial filtered list (first MAX_PICKER_ITEMS)
+        let filtered_indices: Vec<usize> = (0..render_items.len().min(MAX_PICKER_ITEMS)).collect();
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -50,9 +69,18 @@ impl DatabasePicker {
             visible_databases,
             show_all,
             search_input,
-            filtered_cache,
+            render_items,
+            filtered_indices,
             last_query: String::new(),
         }
+    }
+
+    /// Simple hash function for stable keys
+    fn hash_name(name: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn dismiss(&mut self, cx: &mut Context<Self>) {
@@ -89,21 +117,13 @@ impl DatabasePicker {
         cx.notify();
     }
 
-    fn is_database_visible(&self, db_name: &str) -> bool {
-        if self.show_all {
-            true
-        } else {
-            self.visible_databases.iter().any(|d| d == db_name)
-        }
-    }
-
     /// Focus the search input
     pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_input.focus_handle(cx).focus(window);
     }
 
-    /// Update filtered cache if query changed
-    fn update_filtered_cache(&mut self, cx: &App) {
+    /// Update filtered indices if query changed
+    fn update_filtered_indices(&mut self, cx: &App) {
         let query = self.search_input.read(cx).text().to_lowercase();
 
         // Only recompute if query changed
@@ -114,21 +134,17 @@ impl DatabasePicker {
         self.last_query = query.clone();
 
         if query.is_empty() {
-            // No filter - take first MAX_PICKER_ITEMS
-            self.filtered_cache = self
-                .all_databases
-                .iter()
-                .take(MAX_PICKER_ITEMS)
-                .cloned()
-                .collect();
+            // No filter - take first MAX_PICKER_ITEMS indices
+            self.filtered_indices = (0..self.render_items.len().min(MAX_PICKER_ITEMS)).collect();
         } else {
-            // Filter and limit results
-            self.filtered_cache = self
-                .all_databases
+            // Filter by name and limit results
+            self.filtered_indices = self
+                .render_items
                 .iter()
-                .filter(|db| db.to_lowercase().contains(&query))
+                .enumerate()
+                .filter(|(_, item)| item.name.to_lowercase().contains(&query))
                 .take(MAX_PICKER_ITEMS)
-                .cloned()
+                .map(|(i, _)| i)
                 .collect();
         }
     }
@@ -147,12 +163,18 @@ impl Render for DatabasePicker {
         let text_muted = rgb(0x808080);
         let accent_color = rgb(0x0078d4);
 
-        // Update cache if needed (only recomputes when query changes)
-        self.update_filtered_cache(cx);
+        // Update filtered indices if needed (only recomputes when query changes)
+        self.update_filtered_indices(cx);
 
         let total_count = self.all_databases.len();
-        let filtered_count = self.filtered_cache.len();
+        let filtered_count = self.filtered_indices.len();
         let has_search_query = !self.last_query.is_empty();
+
+        // Clone render items for use in uniform_list closure
+        let render_items = self.render_items.clone();
+        let filtered_indices = self.filtered_indices.clone();
+        let visible_databases = self.visible_databases.clone();
+        let show_all = self.show_all;
 
         div()
             .track_focus(&self.focus_handle)
@@ -224,28 +246,35 @@ impl Render for DatabasePicker {
                             "database-picker-list",
                             filtered_count,
                             cx.processor(
-                                move |picker,
+                                move |_picker,
                                       visible_range: std::ops::Range<usize>,
                                       _window,
                                       cx| {
                                     // Only render items in the visible range!
                                     visible_range
-                                        .map(|ix| {
-                                            let db_name = picker.filtered_cache[ix].clone();
-                                            let is_visible = picker.is_database_visible(&db_name);
+                                        .filter_map(|ix| {
+                                            let item_idx = *filtered_indices.get(ix)?;
+                                            let item = render_items.get(item_idx)?;
+                                            let is_visible = if show_all {
+                                                true
+                                            } else {
+                                                visible_databases
+                                                    .iter()
+                                                    .any(|d| d.as_str() == item.name.as_ref())
+                                            };
 
-                                            render_database_item(
-                                                ix,
-                                                &db_name,
+                                            Some(render_database_item_optimized(
+                                                &item.stable_key,
+                                                &item.name,
                                                 is_visible,
                                                 accent_color,
                                                 cx.listener({
-                                                    let db_name = db_name.clone();
+                                                    let db_name = item.name.to_string();
                                                     move |picker, _, _, cx| {
                                                         picker.toggle_database(db_name.clone(), cx);
                                                     }
                                                 }),
-                                            )
+                                            ))
                                         })
                                         .collect()
                                 },
@@ -287,10 +316,10 @@ impl Render for DatabasePicker {
     }
 }
 
-/// Render a single database item for the picker list
-fn render_database_item<F>(
-    index: usize,
-    db_name: &str,
+/// Render a single database item using pre-computed stable key (optimized)
+fn render_database_item_optimized<F>(
+    stable_key: &SharedString,
+    db_name: &SharedString,
     is_visible: bool,
     accent_color: Rgba,
     on_click: F,
@@ -299,7 +328,8 @@ where
     F: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 {
     div()
-        .id(SharedString::from(format!("db-picker-{}", index)))
+        .id(stable_key.clone())
+        .h(px(PICKER_ITEM_HEIGHT)) // Fixed height for virtual list
         .px(px(10.0))
         .py(px(6.0))
         .mx(px(4.0))
@@ -313,7 +343,7 @@ where
         .on_click(on_click)
         // Checkbox with tick
         .child(render_checkbox(is_visible, accent_color))
-        // Database name
+        // Database name (uses pre-computed SharedString)
         .child(
             div()
                 .flex_1()
@@ -321,7 +351,7 @@ where
                 .text_color(rgb(0xe0e0e0))
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(db_name.to_string()),
+                .child(db_name.clone()),
         )
         .into_any_element()
 }

@@ -8,6 +8,26 @@ use crate::ui::tooltip::Tooltip;
 /// Maximum number of databases to show initially
 const MAX_DATABASES_SHOWN: usize = 10;
 
+/// Threshold for using virtual list (uniform_list) instead of regular iteration
+const VIRTUAL_LIST_THRESHOLD: usize = 50;
+
+/// Pre-calculated item height for uniform_list (in pixels)
+const DATABASE_ITEM_HEIGHT: f32 = 28.0;
+
+/// Pre-computed database item for efficient rendering
+/// Stores pre-calculated values to avoid computation during render
+#[derive(Clone)]
+struct DatabaseRenderItem {
+    /// Stable unique key derived from database name hash
+    stable_key: SharedString,
+    /// Index in the original databases vec
+    source_index: usize,
+    /// Pre-formatted size string (e.g., "1.2 GB")
+    formatted_size: Option<SharedString>,
+    /// Database name as SharedString (avoids cloning)
+    name: SharedString,
+}
+
 /// Event emitted when a database is selected
 #[derive(Clone)]
 pub struct DatabaseSelected(pub String);
@@ -40,6 +60,13 @@ pub struct ConnectionBrowser {
     visible_databases: Vec<String>,
     /// Whether all databases should be shown (vs just visible_databases)
     show_all_databases: bool,
+    /// Pre-computed render items (computed once when databases change)
+    /// This avoids re-computing sizes and keys during every render
+    render_cache: Vec<DatabaseRenderItem>,
+    /// Cached visible indices (recomputed when visibility changes)
+    visible_indices_cache: Vec<usize>,
+    /// Flag to track if cache needs rebuild
+    cache_dirty: bool,
 }
 
 impl ConnectionBrowser {
@@ -52,6 +79,9 @@ impl ConnectionBrowser {
             loading_state: LoadingState::Idle,
             visible_databases: Vec::new(),
             show_all_databases: false,
+            render_cache: Vec::new(),
+            visible_indices_cache: Vec::new(),
+            cache_dirty: true,
         }
     }
 
@@ -80,15 +110,18 @@ impl ConnectionBrowser {
     }
 
     /// Set which databases are visible (for filtering)
+    /// Batches the update - only calls notify once
     pub fn set_visible_databases(&mut self, databases: Vec<String>, cx: &mut Context<Self>) {
         self.visible_databases = databases;
-        self.show_all_databases = false; // When setting specific databases, disable show_all
-        cx.notify();
+        self.show_all_databases = false;
+        self.cache_dirty = true; // Mark cache as needing rebuild
+        cx.notify(); // Single notification after all state changes
     }
 
     /// Set show_all state
     pub fn set_show_all(&mut self, show_all: bool, cx: &mut Context<Self>) {
         self.show_all_databases = show_all;
+        self.cache_dirty = true;
         cx.notify();
     }
 
@@ -97,13 +130,58 @@ impl ConnectionBrowser {
         self.show_all_databases
     }
 
+    /// Rebuild render cache from current databases
+    /// Called lazily when cache_dirty is true
+    fn rebuild_render_cache(&mut self) {
+        self.render_cache = self
+            .databases
+            .iter()
+            .enumerate()
+            .map(|(i, db)| DatabaseRenderItem {
+                stable_key: SharedString::from(format!("db-{:016x}", Self::hash_name(&db.name))),
+                source_index: i,
+                formatted_size: db.size_bytes.map(|s| SharedString::from(Self::format_bytes(s))),
+                name: SharedString::from(db.name.clone()),
+            })
+            .collect();
+
+        self.rebuild_visible_indices_cache();
+    }
+
+    /// Rebuild visible indices cache based on current filter
+    fn rebuild_visible_indices_cache(&mut self) {
+        self.visible_indices_cache = if self.show_all_databases {
+            (0..self.render_cache.len()).collect()
+        } else {
+            self.render_cache
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| {
+                    self.visible_databases
+                        .iter()
+                        .any(|v| v.as_str() == item.name.as_ref())
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        self.cache_dirty = false;
+    }
+
+    /// Simple hash function for stable keys
+    fn hash_name(name: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub fn load_databases(&mut self, cx: &mut Context<Self>) {
         if self.connection.db_type != DatabaseType::MongoDB {
             return;
         }
 
         self.loading_state = LoadingState::LoadingDatabases;
-        cx.notify();
+        // Don't notify yet - wait for all state changes
 
         let conn_string = self.connection.get_connection_string();
         let config = ConnectionConfig::new(self.connection.db_type, conn_string);
@@ -128,7 +206,7 @@ impl ConnectionBrowser {
                         this.update(cx, |browser, cx| {
                             match result {
                                 Ok(databases) => {
-                                    // Initially show first MAX_DATABASES_SHOWN databases
+                                    // Batch all state updates together
                                     browser.visible_databases = databases
                                         .iter()
                                         .take(MAX_DATABASES_SHOWN)
@@ -136,11 +214,15 @@ impl ConnectionBrowser {
                                         .collect();
                                     browser.databases = databases;
                                     browser.loading_state = LoadingState::Idle;
+                                    browser.cache_dirty = true;
+                                    // Rebuild cache immediately for better first render
+                                    browser.rebuild_render_cache();
                                 }
                                 Err(e) => {
                                     browser.loading_state = LoadingState::Error(e.to_string());
                                 }
                             }
+                            // Single notify after all state changes (batched update)
                             cx.notify();
                         }).ok();
                         break;
@@ -158,6 +240,9 @@ impl ConnectionBrowser {
                 }
             }
         }).detach();
+        
+        // Single notify for loading state change
+        cx.notify();
     }
 
     fn format_bytes(bytes: u64) -> String {
@@ -210,49 +295,23 @@ impl ConnectionBrowser {
             }))
     }
 
-    /// Static version for use with uniform_list
-    fn render_database_item_static(
-        index: usize,
-        db: &DatabaseInfo,
-        selected_database: &Option<String>,
-        _loading_state: &LoadingState,
-        collections: &std::collections::HashMap<String, Vec<CollectionInfo>>,
-        _window: &mut Window,
-        cx: &mut App,
-    ) -> impl IntoElement {
-        let db_name = db.name.clone();
-        let is_selected = selected_database.as_ref() == Some(&db_name);
-        let is_loading_collections = false;
-
-        Self::render_database_item_internal(
-            index,
-            db,
-            is_selected,
-            is_loading_collections,
-            collections,
-            cx,
-        )
-    }
-
-    /// Internal implementation shared between instance and static methods
-    fn render_database_item_internal(
-        index: usize,
+    /// Optimized render using pre-computed cache and stable keys
+    fn render_database_item_cached(
+        item: &DatabaseRenderItem,
         db: &DatabaseInfo,
         is_selected: bool,
         is_loading_collections: bool,
         collections: &std::collections::HashMap<String, Vec<CollectionInfo>>,
-        _cx: &mut App,
     ) -> impl IntoElement {
-        let db_name = db.name.clone();
-
         let text_color = rgb(0xe0e0e0);
         let text_muted = rgb(0x808080);
         let selected_bg = rgb(0x0e4a7a);
         let hover_bg = rgb(0x252525);
         let accent_color = rgb(0x0078d4);
 
-        // Use index-based ID for performance
-        let item_id = SharedString::from(format!("db-{}", index));
+        // Use stable key from cache (avoids format! during render)
+        let item_id = item.stable_key.clone();
+        let db_name = item.name.clone();
 
         div()
             .id(item_id)
@@ -261,6 +320,7 @@ impl ConnectionBrowser {
             .items_center()
             .gap(px(6.0))
             .w_full()
+            .h(px(DATABASE_ITEM_HEIGHT)) // Fixed height for virtual list
             .px(px(8.0))
             .py(px(4.0))
             .cursor_pointer()
@@ -275,7 +335,7 @@ impl ConnectionBrowser {
                     .text_color(if is_selected { accent_color } else { text_muted })
                     .flex_none(),
             )
-            // Database name
+            // Database name (uses pre-computed SharedString)
             .child(
                 div()
                     .flex_1()
@@ -285,13 +345,13 @@ impl ConnectionBrowser {
                     .text_ellipsis()
                     .child(db_name.clone()),
             )
-            // Database size
-            .when_some(db.size_bytes, |el, size| {
+            // Database size (uses pre-formatted string from cache)
+            .when_some(item.formatted_size.clone(), |el, size| {
                 el.child(
                     div()
                         .text_size(px(10.0))
                         .text_color(text_muted)
-                        .child(Self::format_bytes(size)),
+                        .child(size),
                 )
             })
             // Loading indicator or expand icon
@@ -317,7 +377,7 @@ impl ConnectionBrowser {
                     div()
                         .pl(px(22.0))
                         .w_full()
-                        .child(Self::render_collections_list_static(&db_name, collections))
+                        .child(Self::render_collections_list_static(&db.name, collections))
                 )
             })
     }
@@ -401,20 +461,18 @@ impl Render for ConnectionBrowser {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_muted = rgb(0x808080);
 
-        // Get indices of databases to show (avoid cloning entire DatabaseInfo structs)
-        let database_indices: Vec<usize> = if self.show_all_databases {
-            (0..self.databases.len()).collect()
-        } else {
-            self.databases
-                .iter()
-                .enumerate()
-                .filter(|(_, db)| self.visible_databases.contains(&db.name))
-                .map(|(i, _)| i)
-                .collect()
-        };
+        // Rebuild cache if dirty (lazy rebuild on state change)
+        if self.cache_dirty && !self.render_cache.is_empty() {
+            self.rebuild_visible_indices_cache();
+        } else if self.cache_dirty && !self.databases.is_empty() {
+            self.rebuild_render_cache();
+        }
 
+        let visible_count = self.visible_indices_cache.len();
+        let use_virtual_list = visible_count > VIRTUAL_LIST_THRESHOLD;
+
+        // Clone only what we need for rendering
         let selected_database = self.selected_database.clone();
-        let loading_state = self.loading_state.clone();
         let collections = self.collections.clone();
 
         div()
@@ -422,19 +480,65 @@ impl Render for ConnectionBrowser {
             .flex()
             .flex_col()
             .w_full()
-            // Render database items - only visible ones (limited by MAX_DATABASES_SHOWN initially)
-            .children(database_indices.iter().map(|&i| {
-                let db = &self.databases[i];
-                Self::render_database_item_static(
-                    i,
-                    db,
-                    &selected_database,
-                    &loading_state,
-                    &collections,
-                    _window,
-                    cx,
+            // Use virtual list for large datasets (>50 items)
+            .when(use_virtual_list, |el| {
+                let visible_indices = self.visible_indices_cache.clone();
+                let render_cache = self.render_cache.clone();
+                let databases = self.databases.clone();
+                let selected_db = selected_database.clone();
+                let colls = collections.clone();
+
+                el.child(
+                    div()
+                        .id("database-virtual-list-container")
+                        .h(px((visible_count.min(20) as f32) * DATABASE_ITEM_HEIGHT)) // Show max 20 items height
+                        .overflow_hidden()
+                        .child(
+                            uniform_list(
+                                "database-list",
+                                visible_count,
+                                cx.processor(move |_browser, visible_range: std::ops::Range<usize>, _window, _cx| {
+                                    visible_range
+                                        .filter_map(|ix| {
+                                            let cache_idx = *visible_indices.get(ix)?;
+                                            let item = render_cache.get(cache_idx)?;
+                                            let db = databases.get(item.source_index)?;
+                                            let is_selected = selected_db.as_ref().map(|s| s == &db.name).unwrap_or(false);
+
+                                            Some(
+                                                Self::render_database_item_cached(
+                                                    item,
+                                                    db,
+                                                    is_selected,
+                                                    false,
+                                                    &colls,
+                                                )
+                                                .into_any_element()
+                                            )
+                                        })
+                                        .collect()
+                                }),
+                            )
+                            .size_full()
+                        )
                 )
-            }))
+            })
+            // Use regular iteration for small datasets (≤50 items) - avoids virtual list overhead
+            .when(!use_virtual_list, |el| {
+                el.children(self.visible_indices_cache.iter().filter_map(|&cache_idx| {
+                    let item = self.render_cache.get(cache_idx)?;
+                    let db = self.databases.get(item.source_index)?;
+                    let is_selected = selected_database.as_ref().map(|s| s == &db.name).unwrap_or(false);
+
+                    Some(Self::render_database_item_cached(
+                        item,
+                        db,
+                        is_selected,
+                        false,
+                        &collections,
+                    ))
+                }))
+            })
             // Loading state - shown at top when loading
             .when(matches!(self.loading_state, LoadingState::LoadingDatabases), |el| {
                 el.child(
