@@ -277,6 +277,15 @@ impl ConnectionModal {
             } else {
                 Some(connection_string)
             },
+            // Preserve visible_databases and show_all_databases if editing existing connection
+            visible_databases: self
+                .selected_connection_index
+                .and_then(|i| self.connections.get(i))
+                .and_then(|c| c.visible_databases.clone()),
+            show_all_databases: self
+                .selected_connection_index
+                .and_then(|i| self.connections.get(i))
+                .and_then(|c| c.show_all_databases),
         }
     }
 

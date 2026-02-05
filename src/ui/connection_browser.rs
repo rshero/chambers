@@ -55,10 +55,12 @@ enum FlatTreeItem {
     },
 }
 
-/// Event emitted when a database is selected
+/// Event emitted when a database is selected (for tree expansion)
 #[derive(Clone)]
+#[allow(dead_code)] // Event type kept for potential future use
 pub struct DatabaseSelected(pub String);
 
+#[allow(dead_code)] // Kept for potential future use
 impl EventEmitter<DatabaseSelected> for ConnectionBrowser {}
 
 /// Event emitted when a collection is selected
@@ -97,6 +99,8 @@ pub struct ConnectionBrowser {
     pub loading_state: LoadingState,
     visible_databases: Vec<String>,
     show_all_databases: bool,
+    /// Whether the user has saved preferences (to distinguish from "no preferences yet")
+    has_saved_preferences: bool,
     
     // Pre-computed render cache (flattened tree)
     flat_items: Vec<FlatTreeItem>,
@@ -116,6 +120,7 @@ impl ConnectionBrowser {
             loading_state: LoadingState::Idle,
             visible_databases: Vec::new(),
             show_all_databases: false,
+            has_saved_preferences: false,
             flat_items: Vec::new(),
             flat_items_dirty: true,
         }
@@ -149,6 +154,7 @@ impl ConnectionBrowser {
     pub fn set_visible_databases(&mut self, databases: Vec<String>, cx: &mut Context<Self>) {
         self.visible_databases = databases;
         self.show_all_databases = false;
+        self.has_saved_preferences = true;
         self.flat_items_dirty = true;
         cx.notify();
     }
@@ -156,6 +162,7 @@ impl ConnectionBrowser {
     /// Set show_all state
     pub fn set_show_all(&mut self, show_all: bool, cx: &mut Context<Self>) {
         self.show_all_databases = show_all;
+        self.has_saved_preferences = true;
         self.flat_items_dirty = true;
         cx.notify();
     }
@@ -163,6 +170,28 @@ impl ConnectionBrowser {
     /// Check if currently showing all databases
     pub fn is_showing_all(&self) -> bool {
         self.show_all_databases
+    }
+
+    /// Set the initial visible databases (called before databases are loaded)
+    /// This is used to restore the user's database picker selection on app restart
+    /// If databases is Some (even if empty), we have saved preferences
+    pub fn set_initial_visible_databases(&mut self, databases: Option<Vec<String>>, show_all: bool) {
+        self.show_all_databases = show_all;
+        if let Some(dbs) = databases {
+            self.visible_databases = dbs;
+            self.has_saved_preferences = true;
+        }
+        // If databases is None and show_all is true, user explicitly chose "show all"
+        if show_all {
+            self.has_saved_preferences = true;
+        }
+        self.flat_items_dirty = true;
+    }
+
+    /// Get the connection ID
+    #[allow(dead_code)] // API method for external access
+    pub fn connection_id(&self) -> &str {
+        &self.connection.id
     }
 
     /// Simple hash function for stable keys
@@ -297,13 +326,23 @@ impl ConnectionBrowser {
                         this.update(cx, |browser, cx| {
                             match result {
                                 Ok(databases) => {
-                                    browser.visible_databases = databases
-                                        .iter()
-                                        .take(MAX_DATABASES_SHOWN)
-                                        .map(|db| db.name.clone())
-                                        .collect();
                                     browser.databases = databases;
                                     browser.loading_state = LoadingState::Idle;
+
+                                    // Only apply default if user has NO saved preferences
+                                    // If has_saved_preferences is true, respect the saved state
+                                    // (even if it results in showing all or showing a specific list)
+                                    if !browser.has_saved_preferences {
+                                        // No saved preferences - use default (first N databases)
+                                        browser.visible_databases = browser.databases
+                                            .iter()
+                                            .take(MAX_DATABASES_SHOWN)
+                                            .map(|db| db.name.clone())
+                                            .collect();
+                                    }
+                                    // If has_saved_preferences is true:
+                                    // - show_all_databases=true means show all
+                                    // - visible_databases contains the specific list to show
                                 }
                                 Err(e) => {
                                     browser.loading_state = LoadingState::Error(e.to_string());
@@ -582,6 +621,7 @@ impl Render for ConnectionBrowser {
 }
 
 /// Render a single flat tree item - kept lightweight, uses pre-computed data
+#[allow(clippy::too_many_arguments)]
 fn render_flat_item(
     item: &FlatTreeItem,
     text_color: Rgba,

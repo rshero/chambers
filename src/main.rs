@@ -27,7 +27,7 @@ impl Assets {
                 let path = entry.path();
                 if path
                     .extension()
-                    .map_or(false, |ext| ext == "ttf" || ext == "otf")
+                    .is_some_and(|ext| ext == "ttf" || ext == "otf")
                 {
                     if let Ok(data) = fs::read(&path) {
                         fonts.push(Cow::Owned(data));
@@ -101,7 +101,7 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|cx| ChambersWorkspace::new(cx)),
+            |_, cx| cx.new(ChambersWorkspace::new),
         )
         .unwrap();
         cx.activate(true);

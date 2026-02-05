@@ -3,15 +3,27 @@ use std::sync::Arc;
 
 use crate::db::{ConnectionStorage, DatabaseType};
 use crate::ui::connection_modal::ConnectionModal;
-use crate::ui::sidebar::{AddConnectionRequested, DraggedSidebar, Sidebar};
+use crate::ui::pane::Pane;
+use crate::ui::sidebar::{
+    AddConnectionRequested, DraggedSidebar, OpenCollectionRequested, Sidebar,
+};
 use crate::ui::title_bar::TitleBar;
+
+/// Pending collection to open (deferred to render)
+struct PendingCollection {
+    collection_name: String,
+    database_name: String,
+    connection_string: String,
+}
 
 pub struct ChambersWorkspace {
     title_bar: Entity<TitleBar>,
     sidebar: Entity<Sidebar>,
+    pane: Entity<Pane>,
     bounds: Bounds<Pixels>,
     storage: Arc<ConnectionStorage>,
     pending_db_type: Option<DatabaseType>,
+    pending_collection: Option<PendingCollection>,
 }
 
 impl ChambersWorkspace {
@@ -21,8 +33,9 @@ impl ChambersWorkspace {
 
         let title_bar = cx.new(|_| TitleBar::new());
         let sidebar = cx.new(|_| Sidebar::new(storage.clone()));
+        let pane = cx.new(|_| Pane::new());
 
-        // Subscribe to sidebar events
+        // Subscribe to sidebar events - add connection
         cx.subscribe(
             &sidebar,
             |this, _sidebar, event: &AddConnectionRequested, cx| {
@@ -33,12 +46,29 @@ impl ChambersWorkspace {
         )
         .detach();
 
+        // Subscribe to sidebar events - open collection
+        cx.subscribe(
+            &sidebar,
+            |this, _sidebar, event: &OpenCollectionRequested, cx| {
+                // Store the collection info - we'll open in render where we have window
+                this.pending_collection = Some(PendingCollection {
+                    collection_name: event.collection_name.clone(),
+                    database_name: event.database_name.clone(),
+                    connection_string: event.connection_string.clone(),
+                });
+                cx.notify();
+            },
+        )
+        .detach();
+
         Self {
             title_bar,
             sidebar,
+            pane,
             bounds: Bounds::default(),
             storage,
             pending_db_type: None,
+            pending_collection: None,
         }
     }
 
@@ -89,6 +119,19 @@ impl Render for ChambersWorkspace {
             });
         }
 
+        // Handle pending collection open - we now have window access
+        if let Some(pending) = self.pending_collection.take() {
+            self.pane.update(cx, |pane, cx| {
+                pane.open_collection(
+                    pending.collection_name,
+                    pending.database_name,
+                    pending.connection_string,
+                    window,
+                    cx,
+                );
+            });
+        }
+
         // Refresh sidebar connections when window is active (catches modal close)
         if window.is_window_active() {
             self.sidebar.update(cx, |sidebar, cx| {
@@ -118,6 +161,7 @@ impl Render for ChambersWorkspace {
                 div()
                     .id("main-content")
                     .flex_1()
+                    .min_w_0() // Allow shrinking below content width
                     .w_full()
                     .flex()
                     .flex_row()
@@ -133,8 +177,15 @@ impl Render for ChambersWorkspace {
                     ))
                     // Sidebar on the left
                     .child(self.sidebar.clone())
-                    // Editor/content area
-                    .child(div().id("editor-area").flex_1().h_full().bg(rgb(0x1a1a1a))),
+                    // Pane (tabs + content) on the right
+                    .child(
+                        div()
+                            .id("editor-area")
+                            .flex_1()
+                            .min_w_0() // Allow shrinking below content width
+                            .h_full()
+                            .child(self.pane.clone()),
+                    ),
             )
     }
 }

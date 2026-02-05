@@ -1,9 +1,14 @@
+pub mod collection_view;
 pub mod connection_browser;
 pub mod connection_modal;
 pub mod database_menu;
 pub mod database_picker;
 pub mod filter_menu;
+pub mod pane;
 pub mod sidebar;
+pub mod tab;
+pub mod tab_bar;
+pub mod table_view;
 pub mod text_input;
 pub mod title_bar;
 pub mod tooltip;

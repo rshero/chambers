@@ -2,10 +2,7 @@ use gpui::{prelude::*, *};
 use std::sync::Arc;
 
 use crate::db::{Connection, ConnectionStorage, DatabaseType};
-use crate::ui::connection_browser::{
-    CollectionSelected, ConnectionBrowser, DatabaseSelected as BrowserDatabaseSelected,
-    LoadingState,
-};
+use crate::ui::connection_browser::{CollectionSelected, ConnectionBrowser, LoadingState};
 use crate::ui::database_menu::{DatabaseMenu, DatabaseSelected};
 use crate::ui::database_picker::{DatabasePicker, DatabaseVisibilityChanged};
 use crate::ui::filter_menu::{FilterChanged, FilterMenu};
@@ -28,6 +25,16 @@ const MAX_SIDEBAR_WIDTH: f32 = 600.0;
 pub struct AddConnectionRequested(pub DatabaseType);
 
 impl EventEmitter<AddConnectionRequested> for Sidebar {}
+
+/// Event emitted when a collection is selected (database_name, collection_name, connection_string)
+#[derive(Clone)]
+pub struct OpenCollectionRequested {
+    pub database_name: String,
+    pub collection_name: String,
+    pub connection_string: String,
+}
+
+impl EventEmitter<OpenCollectionRequested> for Sidebar {}
 
 /// Drag payload for sidebar resize
 #[derive(Clone)]
@@ -116,7 +123,7 @@ impl Sidebar {
         }
         self.last_db_menu_dismiss = None;
 
-        let menu = cx.new(|cx| DatabaseMenu::new(cx));
+        let menu = cx.new(DatabaseMenu::new);
 
         // Subscribe to menu events
         cx.subscribe_in(&menu, window, |this, _, event: &DatabaseSelected, _, cx| {
@@ -274,7 +281,9 @@ impl Sidebar {
         // Subscribe to picker events
         cx.subscribe_in(&picker, window, {
             let conn_id = conn_id.clone();
+            let storage = self.storage.clone();
             move |this, _, event: &DatabaseVisibilityChanged, _, cx| {
+                // Update browser state
                 if let Some(browser) = this.connection_browsers.get(&conn_id) {
                     browser.update(cx, |browser, cx| {
                         // Always update show_all state first
@@ -284,6 +293,21 @@ impl Sidebar {
                             browser.set_visible_databases(event.visible_databases.clone(), cx);
                         }
                     });
+                }
+
+                // Save to storage
+                if let Err(e) = storage.update_visible_databases(
+                    &conn_id,
+                    &event.visible_databases,
+                    event.show_all,
+                ) {
+                    eprintln!("Failed to save visible databases: {}", e);
+                }
+
+                // Update in-memory connection
+                if let Some(conn) = this.connections.iter_mut().find(|c| c.id == conn_id) {
+                    conn.visible_databases = Some(event.visible_databases.clone());
+                    conn.show_all_databases = Some(event.show_all);
                 }
             }
         })
@@ -456,29 +480,39 @@ impl Sidebar {
             // Create or get the connection browser for this connection
             if !self.connection_browsers.contains_key(&id) {
                 let browser = cx.new(|_cx| ConnectionBrowser::new(conn.clone()));
+                let connection_string = conn.get_connection_string();
 
-                // Subscribe to browser events
-                cx.subscribe(&browser, |_this, _, event: &BrowserDatabaseSelected, cx| {
-                    println!("Database selected: {}", event.0);
-                    cx.notify();
+                // Get saved visible databases and show_all state
+                let saved_visible_dbs = conn.visible_databases.clone();
+                let saved_show_all = conn.show_all_databases.unwrap_or(false);
+
+                cx.subscribe(&browser, {
+                    let connection_string = connection_string.clone();
+                    move |_this, _, event: &CollectionSelected, cx| {
+                        println!("Collection selected: {}.{}", event.0, event.1);
+                        // Emit event to workspace
+                        cx.emit(OpenCollectionRequested {
+                            database_name: event.0.clone(),
+                            collection_name: event.1.clone(),
+                            connection_string: connection_string.clone(),
+                        });
+                        cx.notify();
+                    }
                 })
                 .detach();
 
-                cx.subscribe(&browser, |_this, _, event: &CollectionSelected, cx| {
-                    println!("Collection selected: {}.{}", event.0, event.1);
-                    cx.notify();
-                })
-                .detach();
-
-                self.connection_browsers.insert(id.clone(), browser);
+                self.connection_browsers.insert(id.clone(), browser.clone());
 
                 // Load databases for MongoDB connections
                 if conn.db_type == DatabaseType::MongoDB {
-                    if let Some(browser) = self.connection_browsers.get(&id) {
-                        browser.update(cx, |browser, cx| {
-                            browser.load_databases(cx);
-                        });
-                    }
+                    // Set the initial visible databases before loading (will be applied after load completes)
+                    browser.update(cx, |browser, _cx| {
+                        browser.set_initial_visible_databases(saved_visible_dbs, saved_show_all);
+                    });
+
+                    browser.update(cx, |browser, cx| {
+                        browser.load_databases(cx);
+                    });
                 }
             }
         }

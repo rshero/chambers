@@ -109,6 +109,11 @@ pub struct Connection {
     pub password: Option<String>,
     /// Optional connection string that overrides individual fields
     pub connection_string: Option<String>,
+    /// Visible databases in the picker (for MongoDB connections)
+    /// Stored as JSON array, remembered across app restarts
+    pub visible_databases: Option<Vec<String>>,
+    /// Whether "Show All" is enabled in the database picker
+    pub show_all_databases: Option<bool>,
 }
 
 impl Connection {
@@ -123,6 +128,8 @@ impl Connection {
             username: None,
             password: None,
             connection_string: None,
+            visible_databases: None,
+            show_all_databases: None,
         }
     }
 

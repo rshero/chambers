@@ -44,6 +44,31 @@ pub trait DatabaseConnection: Send + Sync {
         let _ = database_name;
         Ok(Vec::new())
     }
+
+    /// Query documents from a collection
+    /// Returns documents as JSON values
+    #[allow(dead_code)]
+    async fn query_documents(
+        &self,
+        database_name: &str,
+        collection_name: &str,
+        limit: u32,
+        skip: u32,
+    ) -> Result<Vec<serde_json::Value>> {
+        let _ = (database_name, collection_name, limit, skip);
+        Ok(Vec::new())
+    }
+
+    /// Count documents in a collection
+    #[allow(dead_code)]
+    async fn count_documents(
+        &self,
+        database_name: &str,
+        collection_name: &str,
+    ) -> Result<usize> {
+        let _ = (database_name, collection_name);
+        Ok(0)
+    }
 }
 
 /// Configuration for creating a database connection

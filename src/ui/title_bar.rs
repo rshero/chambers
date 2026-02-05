@@ -89,13 +89,7 @@ impl RenderOnce for WindowControlButton {
                     .path(control_type.icon_path())
                     .size(px(14.0))
                     .text_color(rgb(0xcccccc))
-                    .hover(|style| {
-                        if is_close {
-                            style.text_color(rgb(0xffffff))
-                        } else {
-                            style.text_color(rgb(0xffffff))
-                        }
-                    }),
+                    .hover(|style| style.text_color(rgb(0xffffff))),
             )
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .on_click(move |_, window, cx| {

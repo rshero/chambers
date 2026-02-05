@@ -1,7 +1,8 @@
 //! MongoDB driver implementation
 
 use async_trait::async_trait;
-use mongodb::{options::ClientOptions, Client};
+use futures::TryStreamExt;
+use mongodb::{bson::Document, options::ClientOptions, Client};
 use std::time::Instant;
 
 use crate::db::driver::{CollectionInfo, ConnectionConfig, ConnectionInfo, DatabaseConnection, DatabaseInfo};
@@ -105,7 +106,7 @@ impl DatabaseConnection for MongoConnection {
             .into_iter()
             .map(|db| DatabaseInfo {
                 name: db.name,
-                size_bytes: Some(db.size_on_disk as u64),
+                size_bytes: Some(db.size_on_disk),
             })
             .collect();
 
@@ -147,5 +148,97 @@ impl DatabaseConnection for MongoConnection {
             .collect();
 
         Ok(result)
+    }
+
+    async fn query_documents(
+        &self,
+        database_name: &str,
+        collection_name: &str,
+        limit: u32,
+        skip: u32,
+    ) -> Result<Vec<serde_json::Value>> {
+        // Parse connection string
+        let mut client_options = tokio::time::timeout(
+            self.config.timeout,
+            ClientOptions::parse(&self.config.connection_string),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::InvalidConnectionString(e.to_string()))?;
+
+        client_options.connect_timeout = Some(self.config.timeout);
+        client_options.server_selection_timeout = Some(self.config.timeout);
+
+        let client =
+            Client::with_options(client_options).map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        let db = client.database(database_name);
+        let collection = db.collection::<Document>(collection_name);
+
+        // Build find options
+        let find_options = mongodb::options::FindOptions::builder()
+            .limit(Some(limit as i64))
+            .skip(Some(skip as u64))
+            .build();
+
+        // Execute query
+        let mut cursor = tokio::time::timeout(
+            self.config.timeout,
+            collection.find(Document::new()).with_options(find_options),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        // Collect results
+        let mut documents = Vec::new();
+        while let Some(doc) = cursor
+            .try_next()
+            .await
+            .map_err(|e: mongodb::error::Error| ConnectionError::Failed(e.to_string()))?
+        {
+            // Convert BSON Document to JSON Value
+            let json = mongodb::bson::to_bson(&doc)
+                .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+            let value = serde_json::to_value(&json)
+                .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+            documents.push(value);
+        }
+
+        Ok(documents)
+    }
+
+    async fn count_documents(
+        &self,
+        database_name: &str,
+        collection_name: &str,
+    ) -> Result<usize> {
+        // Parse connection string
+        let mut client_options = tokio::time::timeout(
+            self.config.timeout,
+            ClientOptions::parse(&self.config.connection_string),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::InvalidConnectionString(e.to_string()))?;
+
+        client_options.connect_timeout = Some(self.config.timeout);
+        client_options.server_selection_timeout = Some(self.config.timeout);
+
+        let client =
+            Client::with_options(client_options).map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        let db = client.database(database_name);
+        let collection = db.collection::<Document>(collection_name);
+
+        let count = tokio::time::timeout(
+            self.config.timeout,
+            collection.count_documents(Document::new()),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        Ok(count as usize)
     }
 }
