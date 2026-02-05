@@ -589,7 +589,6 @@ impl Render for TableView {
 
         // Capture scroll offset for rendering
         let scroll_offset = self.horizontal_scroll_offset;
-        let content_width = self.total_width();
 
         // Build rows data
         let page_rows: Vec<(usize, Row)> = self
@@ -603,37 +602,6 @@ impl Render for TableView {
             .collect();
 
         let entity = cx.entity().clone();
-
-        // Calculate scrollbar metrics using stored viewport width
-        let viewport_width: f32 = self.viewport_width.into();
-        let max_scroll: f32 = self.max_horizontal_scroll().into();
-        let needs_scrollbar = max_scroll > 0.0 && viewport_width > 0.0;
-
-        let thumb_ratio = if content_width > 0.0 && viewport_width > 0.0 {
-            (viewport_width / content_width).min(1.0)
-        } else {
-            1.0
-        };
-        let thumb_width = if viewport_width > 0.0 {
-            (viewport_width * thumb_ratio)
-                .max(SCROLLBAR_THUMB_MIN_SIZE)
-                .min(viewport_width)
-        } else {
-            SCROLLBAR_THUMB_MIN_SIZE
-        };
-        let available_track = (viewport_width - thumb_width).max(0.0);
-        let scroll_ratio = if max_scroll > 0.0 {
-            (f32::from(scroll_offset) / max_scroll).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let thumb_left = scroll_ratio * available_track;
-
-        // Debug logging
-        eprintln!(
-            "[TABLE DEBUG] viewport_width={:.1}, content_width={:.1}, max_scroll={:.1}, offset={:.1}, needs_scrollbar={}, thumb_width={:.1}",
-            viewport_width, content_width, max_scroll, f32::from(scroll_offset), needs_scrollbar, thumb_width
-        );
 
         div()
             .id("table-view")
@@ -652,7 +620,6 @@ impl Render for TableView {
                         let new_width = bounds.size.width;
                         entity_for_canvas.update(cx, |this, cx| {
                             if (f32::from(this.viewport_width) - f32::from(new_width)).abs() > 1.0 {
-                                eprintln!("[CANVAS] Captured width: {:.1}", f32::from(new_width));
                                 this.viewport_width = new_width;
                                 this.clamp_scroll();
                                 cx.notify();
@@ -676,6 +643,7 @@ impl Render for TableView {
                     .min_h_0()
                     .min_w_0() // Allow shrinking below content
                     .overflow_hidden()
+                    .relative() // For absolute content positioning
                     .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                         let delta = event.delta.pixel_delta(px(20.0));
                         // Handle horizontal scroll (shift+scroll or horizontal scroll)
@@ -683,11 +651,15 @@ impl Render for TableView {
                             this.handle_scroll_wheel(delta.x, cx);
                         }
                     }))
-                    // Clipped content area
+                    // Clipped content area - use absolute positioning to prevent layout expansion
                     .child(
                         div()
                             .id("table-content-clip")
-                            .size_full()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
                             .overflow_hidden()
                             .overflow_y_scroll()
                             .track_scroll(&self.vertical_scroll)
@@ -705,7 +677,7 @@ impl Render for TableView {
                             ),
                     ),
             )
-            // Horizontal scrollbar - always visible track, thumb when needed
+            // Horizontal scrollbar - canvas-based for proper bounds tracking
             .child({
                 let entity_for_scrollbar = entity.clone();
                 div()
@@ -715,52 +687,199 @@ impl Render for TableView {
                     .bg(rgb(0x1e1e1e))
                     .border_t_1()
                     .border_color(rgb(0x3a3a3a))
+                    .px(px(2.0))
+                    .py(px(2.0))
                     .child(
+                        // Track div with canvas for mouse events and thumb painting
                         div()
                             .id("scrollbar-track")
                             .relative()
-                            .mx(px(2.0))
-                            .my(px(2.0))
+                            .w_full()
                             .h(px(SCROLLBAR_TRACK_HEIGHT - 4.0))
                             .rounded(px(4.0))
                             .bg(rgb(0x2a2a2a))
                             .cursor(CursorStyle::PointingHand)
-                            // Click on track to scroll
-                            .on_mouse_down(MouseButton::Left, {
-                                let entity = entity_for_scrollbar.clone();
-                                move |event: &MouseDownEvent, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        let vp_width: f32 = this.viewport_width.into();
-                                        if vp_width > 0.0 {
-                                            // Approximate track origin (will be refined with proper bounds)
-                                            let click_x: f32 = event.position.x.into();
-                                            let max_s: f32 = this.max_horizontal_scroll().into();
-                                            // Simple ratio based on click position relative to viewport width
-                                            let ratio = (click_x / vp_width).clamp(0.0, 1.0);
-                                            this.horizontal_scroll_offset = px(ratio * max_s);
-                                            this.clamp_scroll();
-                                            cx.notify();
+                            // Canvas to capture track bounds, handle mouse events, and paint thumb
+                            .child(
+                                canvas(|_, _, _| {}, {
+                                    let entity = entity_for_scrollbar.clone();
+                                    move |track_bounds, _, window, cx| {
+                                        let track_width: f32 = track_bounds.size.width.into();
+                                        let track_origin_x = track_bounds.origin.x;
+
+                                        // Read state to compute thumb bounds
+                                        let state = entity.read(cx);
+                                        let vp_width: f32 = state.viewport_width.into();
+                                        let content_w = state.total_width();
+                                        let max_scroll: f32 = state.max_horizontal_scroll().into();
+                                        let scroll_offset: f32 =
+                                            state.horizontal_scroll_offset.into();
+
+                                        let needs_scrollbar =
+                                            content_w > vp_width && vp_width > 0.0;
+
+                                        // Calculate thumb geometry
+                                        let (thumb_width, thumb_left) = if needs_scrollbar {
+                                            let ratio = (vp_width / content_w).clamp(0.0, 1.0);
+                                            let tw =
+                                                (track_width * ratio).max(SCROLLBAR_THUMB_MIN_SIZE);
+                                            let available = (track_width - tw).max(1.0);
+                                            let scroll_ratio = if max_scroll > 0.0 {
+                                                (scroll_offset / max_scroll).clamp(0.0, 1.0)
+                                            } else {
+                                                0.0
+                                            };
+                                            (tw, scroll_ratio * available)
+                                        } else {
+                                            (0.0, 0.0)
+                                        };
+
+                                        let thumb_bounds = Bounds {
+                                            origin: point(
+                                                track_origin_x + px(thumb_left),
+                                                track_bounds.origin.y,
+                                            ),
+                                            size: size(px(thumb_width), track_bounds.size.height),
+                                        };
+
+                                        // Paint thumb
+                                        if needs_scrollbar {
+                                            let color = if state.is_dragging_scrollbar {
+                                                rgb(0x808080)
+                                            } else {
+                                                rgb(0x606060)
+                                            };
+
+                                            window.paint_quad(PaintQuad {
+                                                bounds: thumb_bounds.clone(),
+                                                corner_radii: Corners::all(px(4.0)),
+                                                background: color.into(),
+                                                border_widths: Edges::default(),
+                                                border_color: Hsla::transparent_black(),
+                                                border_style: BorderStyle::default(),
+                                            });
                                         }
-                                    });
-                                }
-                            })
-                            // Scrollbar thumb
-                            .when(needs_scrollbar, |el| {
-                                el.child(
-                                    div()
-                                        .id("scrollbar-thumb")
-                                        .absolute()
-                                        .top_0()
-                                        .bottom_0()
-                                        .left(px(thumb_left))
-                                        .w(px(thumb_width))
-                                        .bg(rgb(0x606060))
-                                        .rounded(px(4.0))
-                                        .cursor(CursorStyle::PointingHand)
-                                        .hover(|s| s.bg(rgb(0x707070)))
-                                        .active(|s| s.bg(rgb(0x808080))),
-                                )
-                            }),
+
+                                        // Mouse down - start drag on thumb, or jump on track
+                                        window.on_mouse_event({
+                                            let entity = entity.clone();
+                                            let track_bounds = track_bounds.clone();
+                                            let thumb_bounds = thumb_bounds.clone();
+                                            move |ev: &MouseDownEvent, _, _, cx| {
+                                                if !track_bounds.contains(&ev.position) {
+                                                    return;
+                                                }
+
+                                                if thumb_bounds.contains(&ev.position) {
+                                                    // Click on thumb - start drag
+                                                    entity.update(cx, |this, cx| {
+                                                        this.is_dragging_scrollbar = true;
+                                                        // Store offset within thumb from its left edge
+                                                        this.drag_start = Some((
+                                                            ev.position.x - thumb_bounds.origin.x,
+                                                            track_origin_x,
+                                                        ));
+                                                        cx.notify();
+                                                    });
+                                                } else {
+                                                    // Click on track - jump to position (center thumb on click)
+                                                    entity.update(cx, |this, cx| {
+                                                        let click_relative = f32::from(
+                                                            ev.position.x - track_origin_x,
+                                                        );
+                                                        let track_w: f32 =
+                                                            track_bounds.size.width.into();
+                                                        let thumb_w = thumb_width;
+                                                        let available =
+                                                            (track_w - thumb_w).max(1.0);
+
+                                                        // Center thumb on click position
+                                                        let thumb_left_target = (click_relative
+                                                            - thumb_w / 2.0)
+                                                            .clamp(0.0, available);
+                                                        let scroll_ratio =
+                                                            thumb_left_target / available;
+
+                                                        this.horizontal_scroll_offset =
+                                                            px(scroll_ratio * max_scroll);
+                                                        this.clamp_scroll();
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            }
+                                        });
+
+                                        // Mouse up - end drag
+                                        window.on_mouse_event({
+                                            let entity = entity.clone();
+                                            move |_: &MouseUpEvent, _, _, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    if this.is_dragging_scrollbar {
+                                                        this.is_dragging_scrollbar = false;
+                                                        this.drag_start = None;
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }
+                                        });
+
+                                        // Mouse move - handle drag
+                                        window.on_mouse_event({
+                                            let entity = entity.clone();
+                                            let track_bounds = track_bounds.clone();
+                                            move |ev: &MouseMoveEvent, _, _, cx| {
+                                                let state = entity.read(cx);
+                                                if !state.is_dragging_scrollbar || !ev.dragging() {
+                                                    return;
+                                                }
+
+                                                let Some((thumb_click_offset, track_origin)) =
+                                                    state.drag_start
+                                                else {
+                                                    return;
+                                                };
+
+                                                entity.update(cx, |this, cx| {
+                                                    let vp_w: f32 = this.viewport_width.into();
+                                                    let content_w = this.total_width();
+                                                    let max_s: f32 =
+                                                        this.max_horizontal_scroll().into();
+                                                    let track_w: f32 =
+                                                        track_bounds.size.width.into();
+
+                                                    if track_w > 0.0 && max_s > 0.0 {
+                                                        // Calculate thumb width
+                                                        let ratio =
+                                                            (vp_w / content_w).clamp(0.0, 1.0);
+                                                        let thumb_w = (track_w * ratio)
+                                                            .max(SCROLLBAR_THUMB_MIN_SIZE);
+                                                        let available =
+                                                            (track_w - thumb_w).max(1.0);
+
+                                                        // Where should thumb left edge be?
+                                                        // Mouse position - track origin - offset within thumb
+                                                        let thumb_left = f32::from(
+                                                            ev.position.x
+                                                                - track_origin
+                                                                - thumb_click_offset,
+                                                        );
+                                                        let thumb_left_clamped =
+                                                            thumb_left.clamp(0.0, available);
+
+                                                        let scroll_ratio =
+                                                            thumb_left_clamped / available;
+                                                        this.horizontal_scroll_offset =
+                                                            px(scroll_ratio * max_s);
+                                                        this.clamp_scroll();
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    }
+                                })
+                                .size_full(),
+                            ),
                     )
             })
             // Pagination
