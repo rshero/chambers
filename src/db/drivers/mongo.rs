@@ -241,4 +241,56 @@ impl DatabaseConnection for MongoConnection {
 
         Ok(count as usize)
     }
+
+    async fn drop_database(&self, database_name: &str) -> Result<()> {
+        let mut client_options = tokio::time::timeout(
+            self.config.timeout,
+            ClientOptions::parse(&self.config.connection_string),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::InvalidConnectionString(e.to_string()))?;
+
+        client_options.connect_timeout = Some(self.config.timeout);
+        client_options.server_selection_timeout = Some(self.config.timeout);
+
+        let client =
+            Client::with_options(client_options).map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        tokio::time::timeout(
+            self.config.timeout,
+            client.database(database_name).drop(),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn drop_collection(&self, database_name: &str, collection_name: &str) -> Result<()> {
+        let mut client_options = tokio::time::timeout(
+            self.config.timeout,
+            ClientOptions::parse(&self.config.connection_string),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::InvalidConnectionString(e.to_string()))?;
+
+        client_options.connect_timeout = Some(self.config.timeout);
+        client_options.server_selection_timeout = Some(self.config.timeout);
+
+        let client =
+            Client::with_options(client_options).map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        tokio::time::timeout(
+            self.config.timeout,
+            client.database(database_name).collection::<Document>(collection_name).drop(),
+        )
+        .await
+        .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
+        .map_err(|e| ConnectionError::Failed(e.to_string()))?;
+
+        Ok(())
+    }
 }

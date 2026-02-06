@@ -170,7 +170,6 @@ impl ConnectionStorage {
     }
 
     /// Delete a connection by ID
-    #[allow(dead_code)]
     pub fn delete(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM connections WHERE id = ?1", params![id])?;

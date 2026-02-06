@@ -69,6 +69,18 @@ pub struct CollectionSelected(pub String, pub String); // (database_name, collec
 
 impl EventEmitter<CollectionSelected> for ConnectionBrowser {}
 
+/// Event emitted when a database row is right-clicked (connection_id, database_name, position)
+#[derive(Clone)]
+pub struct DatabaseContextMenuRequested(pub String, pub String, pub Point<Pixels>);
+
+impl EventEmitter<DatabaseContextMenuRequested> for ConnectionBrowser {}
+
+/// Event emitted when a collection row is right-clicked (connection_id, database_name, collection_name, position)
+#[derive(Clone)]
+pub struct CollectionContextMenuRequested(pub String, pub String, pub String, pub Point<Pixels>);
+
+impl EventEmitter<CollectionContextMenuRequested> for ConnectionBrowser {}
+
 /// Loading state for the browser
 #[derive(Clone, PartialEq)]
 pub enum LoadingState {
@@ -621,6 +633,7 @@ impl Render for ConnectionBrowser {
         // Main tree view with uniform_list for virtualization
         let item_count = self.flat_items.len();
         let flat_items = self.flat_items.clone(); // Single clone for the processor
+        let conn_id = self.connection.id.clone();
 
         div()
             .id("connection-browser")
@@ -634,6 +647,7 @@ impl Render for ConnectionBrowser {
                     "database-tree",
                     item_count,
                     cx.processor(move |browser, range: std::ops::Range<usize>, _window, cx| {
+                        let conn_id = &conn_id;
                         range
                             .filter_map(|ix| {
                                 let item = flat_items.get(ix)?;
@@ -644,6 +658,7 @@ impl Render for ConnectionBrowser {
                                     hover_bg,
                                     accent_color,
                                     error_color,
+                                    conn_id,
                                     cx,
                                     browser,
                                 ))
@@ -667,6 +682,7 @@ fn render_flat_item(
     hover_bg: Rgba,
     accent_color: Rgba,
     error_color: Rgba,
+    conn_id: &str,
     cx: &mut Context<ConnectionBrowser>,
     _browser: &ConnectionBrowser,
 ) -> AnyElement {
@@ -681,6 +697,7 @@ fn render_flat_item(
             let db_name = name.to_string();
             let is_exp = *is_expanded;
             let is_load = *is_loading;
+            let conn_id_owned = conn_id.to_string();
 
             div()
                 .id(stable_key.clone())
@@ -694,8 +711,24 @@ fn render_flat_item(
                 .cursor_pointer()
                 .rounded(px(4.0))
                 .hover(|s| s.bg(hover_bg))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_database(&db_name, cx);
+                .on_click(cx.listener({
+                    let db_name = db_name.clone();
+                    move |this, _, _, cx| {
+                        this.toggle_database(&db_name, cx);
+                    }
+                }))
+                // Right-click context menu
+                .on_mouse_down(MouseButton::Right, cx.listener({
+                    let db_name = db_name.clone();
+                    let conn_id = conn_id_owned.clone();
+                    move |_this, event: &MouseDownEvent, _, cx| {
+                        cx.emit(DatabaseContextMenuRequested(
+                            conn_id.clone(),
+                            db_name.clone(),
+                            event.position,
+                        ));
+                        cx.stop_propagation();
+                    }
                 }))
                 // Chevron
                 .child(
@@ -758,6 +791,7 @@ fn render_flat_item(
             let db = db_name.to_string();
             let coll = name.to_string();
             let selected = *is_selected;
+            let conn_id_owned = conn_id.to_string();
 
             div()
                 .id(stable_key.clone())
@@ -774,8 +808,27 @@ fn render_flat_item(
                 // Subtle selection: light background tint instead of solid color
                 .when(selected, |el| el.bg(rgba(0x0078d420))) // 12% opacity accent
                 .hover(|s| s.bg(hover_bg))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_collection(&db, &coll, cx);
+                .on_click(cx.listener({
+                    let db = db.clone();
+                    let coll = coll.clone();
+                    move |this, _, _, cx| {
+                        this.select_collection(&db, &coll, cx);
+                    }
+                }))
+                // Right-click context menu
+                .on_mouse_down(MouseButton::Right, cx.listener({
+                    let db = db.clone();
+                    let coll = coll.clone();
+                    let conn_id = conn_id_owned.clone();
+                    move |_this, event: &MouseDownEvent, _, cx| {
+                        cx.emit(CollectionContextMenuRequested(
+                            conn_id.clone(),
+                            db.clone(),
+                            coll.clone(),
+                            event.position,
+                        ));
+                        cx.stop_propagation();
+                    }
                 }))
                 // Left accent bar for selected item
                 .child(

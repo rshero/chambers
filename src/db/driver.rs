@@ -69,6 +69,18 @@ pub trait DatabaseConnection: Send + Sync {
         let _ = (database_name, collection_name);
         Ok(0)
     }
+
+    /// Drop (delete) a database
+    async fn drop_database(&self, database_name: &str) -> Result<()> {
+        let _ = database_name;
+        Err(ConnectionError::Failed("Drop database not supported for this driver".into()))
+    }
+
+    /// Drop (delete) a collection from a database
+    async fn drop_collection(&self, database_name: &str, collection_name: &str) -> Result<()> {
+        let _ = (database_name, collection_name);
+        Err(ConnectionError::Failed("Drop collection not supported for this driver".into()))
+    }
 }
 
 /// Configuration for creating a database connection

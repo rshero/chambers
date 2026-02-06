@@ -71,24 +71,36 @@ impl Render for DatabaseMenu {
                         div()
                             .id(db_type.name())
                             .px(px(8.0))
-                            .py(px(5.0))
+                            .py(px(4.0))
                             .mx(px(4.0))
                             .rounded(px(3.0))
                             .cursor_pointer()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(8.0))
+                            .gap(px(6.0))
+                            .text_size(px(13.0))
+                            .text_color(rgb(0xe0e0e0))
                             .when(is_selected, |el| el.bg(selected_bg))
                             .hover(|style| style.bg(hover_bg))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_database(db_type, cx);
                             }))
-                            .child(img(db_type.icon_path()).size(px(16.0)).flex_none())
                             .child(
                                 div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(0xe0e0e0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(16.0))
+                                    .flex_none()
+                                    .child(img(db_type.icon_path()).size(px(16.0))),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(16.0))
+                                    .line_height(px(16.0))
                                     .child(db_type.name()),
                             )
                     }),

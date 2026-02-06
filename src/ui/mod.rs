@@ -1,6 +1,7 @@
 pub mod collection_view;
 pub mod connection_browser;
 pub mod connection_modal;
+pub mod context_menu;
 pub mod database_menu;
 pub mod database_picker;
 pub mod filter_menu;

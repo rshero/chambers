@@ -163,6 +163,13 @@ impl ConnectionModal {
         cx.notify();
     }
 
+    /// Select a connection by its ID (used when opening Properties from context menu)
+    pub fn select_connection_by_id(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(index) = self.connections.iter().position(|c| c.id == id) {
+            self.select_connection(index, cx);
+        }
+    }
+
     fn new_connection(&mut self, cx: &mut Context<Self>) {
         self.selected_connection_index = None;
         self.test_result = TestResult::None;

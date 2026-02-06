@@ -107,14 +107,16 @@ impl Render for FilterMenu {
                 div()
                     .id(SharedString::from(format!("filter-{}", db_type.name())))
                     .px(px(8.0))
-                    .py(px(5.0))
+                    .py(px(4.0))
                     .mx(px(4.0))
                     .rounded(px(3.0))
                     .cursor_pointer()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(px(6.0))
+                    .text_size(px(13.0))
+                    .text_color(text_color)
                     .hover(|style| style.bg(hover_bg))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_type(db_type, cx);
@@ -122,12 +124,22 @@ impl Render for FilterMenu {
                     // Checkbox
                     .child(render_checkbox(is_selected, accent_color))
                     // Database icon
-                    .child(img(db_type.icon_path()).size(px(14.0)).flex_none())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(16.0))
+                            .flex_none()
+                            .child(img(db_type.icon_path()).size(px(14.0))),
+                    )
                     // Database name
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .text_color(text_color)
+                            .flex()
+                            .items_center()
+                            .h(px(16.0))
+                            .line_height(px(16.0))
                             .child(db_type.name()),
                     )
             }))

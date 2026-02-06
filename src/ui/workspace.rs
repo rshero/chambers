@@ -1,11 +1,12 @@
 use gpui::{prelude::*, *};
 use std::sync::Arc;
 
-use crate::db::{ConnectionStorage, DatabaseType};
+use crate::db::{Connection, ConnectionStorage, DatabaseType};
 use crate::ui::connection_modal::ConnectionModal;
 use crate::ui::pane::Pane;
 use crate::ui::sidebar::{
-    AddConnectionRequested, DraggedSidebar, OpenCollectionRequested, Sidebar,
+    AddConnectionRequested, DraggedSidebar, EditConnectionRequested, OpenCollectionRequested,
+    Sidebar,
 };
 use crate::ui::title_bar::TitleBar;
 
@@ -24,6 +25,7 @@ pub struct ChambersWorkspace {
     storage: Arc<ConnectionStorage>,
     pending_db_type: Option<DatabaseType>,
     pending_collection: Option<PendingCollection>,
+    pending_edit_connection: Option<Connection>,
 }
 
 impl ChambersWorkspace {
@@ -61,6 +63,16 @@ impl ChambersWorkspace {
         )
         .detach();
 
+        // Subscribe to sidebar events - edit connection (Properties context menu)
+        cx.subscribe(
+            &sidebar,
+            |this, _sidebar, event: &EditConnectionRequested, cx| {
+                this.pending_edit_connection = Some(event.0.clone());
+                cx.notify();
+            },
+        )
+        .detach();
+
         Self {
             title_bar,
             sidebar,
@@ -69,6 +81,7 @@ impl ChambersWorkspace {
             storage,
             pending_db_type: None,
             pending_collection: None,
+            pending_edit_connection: None,
         }
     }
 
@@ -100,6 +113,42 @@ impl ChambersWorkspace {
         .ok();
     }
 
+    fn open_edit_connection_window(
+        connection: Connection,
+        storage: Arc<ConnectionStorage>,
+        cx: &mut App,
+    ) {
+        let bounds = Bounds::centered(None, size(px(900.0), px(600.0)), cx);
+        let conn_id = connection.id.clone();
+        let db_type = connection.db_type;
+
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_decorations: Some(WindowDecorations::Client),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(SharedString::from("Edit Connection")),
+                    appears_transparent: true,
+                    ..Default::default()
+                }),
+                focus: true,
+                show: true,
+                is_movable: true,
+                is_resizable: true,
+                window_min_size: Some(size(px(600.0), px(400.0))),
+                ..Default::default()
+            },
+            |_, cx| {
+                cx.new(|cx| {
+                    let mut modal = ConnectionModal::new(db_type, storage, cx);
+                    modal.select_connection_by_id(&conn_id, cx);
+                    modal
+                })
+            },
+        )
+        .ok();
+    }
+
     fn resize_sidebar(&mut self, position_x: Pixels, cx: &mut Context<Self>) {
         // Calculate new width based on mouse position relative to workspace left edge
         let new_width = position_x - self.bounds.origin.x;
@@ -116,6 +165,14 @@ impl Render for ChambersWorkspace {
             let storage = self.storage.clone();
             cx.defer(move |cx| {
                 Self::open_connection_window(db_type, storage, cx);
+            });
+        }
+
+        // Handle pending edit connection - open modal with connection pre-selected
+        if let Some(connection) = self.pending_edit_connection.take() {
+            let storage = self.storage.clone();
+            cx.defer(move |cx| {
+                Self::open_edit_connection_window(connection, storage, cx);
             });
         }
 
