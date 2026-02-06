@@ -203,7 +203,7 @@ impl ConnectionBrowser {
     }
 
     fn format_bytes(bytes: u64) -> String {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+        const UNITS: &[&str; 5] = &["B", "KB", "MB", "GB", "TB"];
         let mut size = bytes as f64;
         let mut unit_index = 0;
         while size >= 1024.0 && unit_index < UNITS.len() - 1 {
