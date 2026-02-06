@@ -32,7 +32,7 @@ impl ChambersWorkspace {
             Arc::new(ConnectionStorage::new().expect("Failed to initialize connection storage"));
 
         let title_bar = cx.new(|_| TitleBar::new());
-        let sidebar = cx.new(|_| Sidebar::new(storage.clone()));
+        let sidebar = cx.new(|cx| Sidebar::new(storage.clone(), cx));
         let pane = cx.new(|_| Pane::new());
 
         // Subscribe to sidebar events - add connection

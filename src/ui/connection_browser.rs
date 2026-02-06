@@ -72,6 +72,8 @@ impl EventEmitter<CollectionSelected> for ConnectionBrowser {}
 /// Loading state for the browser
 #[derive(Clone, PartialEq)]
 pub enum LoadingState {
+    /// Not yet connected - showing saved database names as preview
+    NotConnected,
     Idle,
     LoadingDatabases,
     Error(String),
@@ -117,7 +119,7 @@ impl ConnectionBrowser {
             collection_loading_states: HashMap::new(),
             selected_database: None,
             selected_collection: None,
-            loading_state: LoadingState::Idle,
+            loading_state: LoadingState::NotConnected,
             visible_databases: Vec::new(),
             show_all_databases: false,
             has_saved_preferences: false,
@@ -186,6 +188,25 @@ impl ConnectionBrowser {
             self.has_saved_preferences = true;
         }
         self.flat_items_dirty = true;
+    }
+
+    /// Populate the database list from saved names only (no connection required).
+    /// This shows the saved databases as a preview in the tree without connecting.
+    pub fn set_saved_databases_preview(&mut self, database_names: Vec<String>) {
+        self.databases = database_names
+            .iter()
+            .map(|name| DatabaseInfo {
+                name: name.clone(),
+                size_bytes: None,
+            })
+            .collect();
+        self.loading_state = LoadingState::NotConnected;
+        self.flat_items_dirty = true;
+    }
+
+    /// Check if the browser is in the not-connected preview state
+    pub fn is_not_connected(&self) -> bool {
+        self.loading_state == LoadingState::NotConnected
     }
 
     /// Get the connection ID
@@ -300,6 +321,9 @@ impl ConnectionBrowser {
             return;
         }
 
+        // Remember which databases were expanded (from preview state)
+        let previously_expanded = self.expanded_databases.clone();
+
         self.loading_state = LoadingState::LoadingDatabases;
         self.flat_items_dirty = true;
 
@@ -343,6 +367,15 @@ impl ConnectionBrowser {
                                     // If has_saved_preferences is true:
                                     // - show_all_databases=true means show all
                                     // - visible_databases contains the specific list to show
+
+                                    // Load collections for any databases that were expanded in preview
+                                    for db_name in &previously_expanded {
+                                        let db_exists = browser.databases.iter().any(|db| &db.name == db_name);
+                                        if db_exists {
+                                            browser.expanded_databases.insert(db_name.clone());
+                                            browser.load_collections(db_name, cx);
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     browser.loading_state = LoadingState::Error(e.to_string());
@@ -382,12 +415,17 @@ impl ConnectionBrowser {
             self.expanded_databases.insert(db_name.clone());
             self.selected_database = Some(db_name.clone());
 
+            // If we're in preview mode (not connected), trigger a real connection
+            if self.is_not_connected() {
+                self.load_databases(cx);
+            }
+
             let load_state = self.collection_loading_states
                 .get(&db_name)
                 .cloned()
                 .unwrap_or(CollectionLoadingState::NotLoaded);
 
-            if matches!(load_state, CollectionLoadingState::NotLoaded | CollectionLoadingState::Error(_)) {
+            if !self.is_not_connected() && matches!(load_state, CollectionLoadingState::NotLoaded | CollectionLoadingState::Error(_)) {
                 self.load_collections(&db_name, cx);
             }
         }

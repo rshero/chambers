@@ -70,8 +70,62 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
-    pub fn new(storage: Arc<ConnectionStorage>) -> Self {
+    pub fn new(storage: Arc<ConnectionStorage>, cx: &mut Context<Self>) -> Self {
         let connections = storage.get_all().unwrap_or_default();
+
+        // Identify connections with saved database preferences to auto-expand
+        let mut expanded_connections = std::collections::HashSet::new();
+        let mut connection_browsers = std::collections::HashMap::new();
+
+        for conn in &connections {
+            let has_saved_dbs = conn
+                .visible_databases
+                .as_ref()
+                .map(|dbs| !dbs.is_empty())
+                .unwrap_or(false);
+            let has_show_all = conn.show_all_databases.unwrap_or(false);
+
+            if (has_saved_dbs || has_show_all) && conn.db_type == DatabaseType::MongoDB {
+                // Auto-expand this connection
+                expanded_connections.insert(conn.id.clone());
+
+                // Create browser with saved databases as preview (no connection)
+                let browser = cx.new(|_cx| ConnectionBrowser::new(conn.clone()));
+                let connection_string = conn.get_connection_string();
+
+                // Subscribe to collection selection events
+                cx.subscribe(&browser, {
+                    let connection_string = connection_string.clone();
+                    move |_this, _, event: &CollectionSelected, cx| {
+                        println!("Collection selected: {}.{}", event.0, event.1);
+                        cx.emit(OpenCollectionRequested {
+                            database_name: event.0.clone(),
+                            collection_name: event.1.clone(),
+                            connection_string: connection_string.clone(),
+                        });
+                        cx.notify();
+                    }
+                })
+                .detach();
+
+                // Set initial visible databases and populate preview
+                let saved_visible_dbs = conn.visible_databases.clone();
+                let saved_show_all = conn.show_all_databases.unwrap_or(false);
+
+                browser.update(cx, |browser, _cx| {
+                    browser.set_initial_visible_databases(saved_visible_dbs.clone(), saved_show_all);
+                    // Populate database list from saved names as a static preview
+                    if let Some(ref dbs) = saved_visible_dbs {
+                        if !dbs.is_empty() {
+                            browser.set_saved_databases_preview(dbs.clone());
+                        }
+                    }
+                });
+
+                connection_browsers.insert(conn.id.clone(), browser);
+            }
+        }
+
         Self {
             width: px(DEFAULT_SIDEBAR_WIDTH),
             database_menu: None,
@@ -83,8 +137,8 @@ impl Sidebar {
             last_filter_menu_dismiss: None,
             storage,
             connections,
-            expanded_connections: std::collections::HashSet::new(),
-            connection_browsers: std::collections::HashMap::new(),
+            expanded_connections,
+            connection_browsers,
             is_refreshing: false,
             type_filter: std::collections::HashSet::new(),
         }
@@ -514,6 +568,16 @@ impl Sidebar {
                         browser.load_databases(cx);
                     });
                 }
+            } else if conn.db_type == DatabaseType::MongoDB {
+                // Browser already exists - if it's in NotConnected state (preview only),
+                // trigger the actual connection
+                let browser = self.connection_browsers.get(&id).unwrap().clone();
+                let needs_connect = browser.read(cx).is_not_connected();
+                if needs_connect {
+                    browser.update(cx, |browser, cx| {
+                        browser.load_databases(cx);
+                    });
+                }
             }
         }
         cx.notify();
@@ -550,7 +614,7 @@ impl Sidebar {
                 let conn_clone = (*conn).clone();
 
                 // Get database count and error state if browser exists
-                let (db_count, visible_count, is_loading, has_error) =
+                let (db_count, visible_count, is_loading, has_error, is_not_connected) =
                     if let Some(browser) = self.connection_browsers.get(&conn_id) {
                         let browser = browser.read(cx);
                         (
@@ -558,9 +622,10 @@ impl Sidebar {
                             browser.visible_count(),
                             matches!(browser.loading_state, LoadingState::LoadingDatabases),
                             matches!(browser.loading_state, LoadingState::Error(_)),
+                            browser.is_not_connected(),
                         )
                     } else {
-                        (0, 0, false, false)
+                        (0, 0, false, false, false)
                     };
 
                 div()
@@ -619,9 +684,9 @@ impl Sidebar {
                                             .text_ellipsis()
                                             .child(conn_name),
                                     )
-                                    // Database count badge (clickable, only when expanded and has databases)
+                                    // Database count badge (clickable, only when expanded, has databases, and connected)
                                     // Wrapped in relative container so picker can be positioned absolutely below it
-                                    .when(is_expanded && db_count > 0, |el| {
+                                    .when(is_expanded && db_count > 0 && !is_not_connected, |el| {
                                         let is_picker_open =
                                             self.database_picker_connection_id.as_ref()
                                                 == Some(&conn_id);
