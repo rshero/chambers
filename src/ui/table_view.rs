@@ -549,17 +549,18 @@ impl TableView {
                     .border_r_1()
                     .border_color(border_color)
                     .overflow_hidden()
+                    // Make all cells clickable for detail view
+                    .cursor_pointer()
                     .when(is_truncated, |el| {
-                        el.cursor_pointer()
-                            .tooltip(Tooltip::text("Click to view full content"))
-                            .on_click(cx.listener(move |_this, _, _, cx| {
-                                cx.emit(CellClicked {
-                                    row_index: cell_row_idx,
-                                    col_index: cell_col_idx,
-                                    value: cell_value.clone(),
-                                });
-                            }))
+                        el.tooltip(Tooltip::text("Click to view full content"))
                     })
+                    .on_click(cx.listener(move |_this, _, _, cx| {
+                        cx.emit(CellClicked {
+                            row_index: cell_row_idx,
+                            col_index: cell_col_idx,
+                            value: cell_value.clone(),
+                        });
+                    }))
                     .child(
                         div()
                             .text_size(px(12.0))

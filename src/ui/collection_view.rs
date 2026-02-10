@@ -279,47 +279,232 @@ impl CollectionView {
     }
 }
 
-/// Convert a JSON value to a display string
+/// Convert a JSON value to a human-readable display string
+/// Handles MongoDB Extended JSON format (BSON types serialized to JSON)
 fn value_to_display_string(value: &Value) -> SharedString {
     match value {
         Value::Null => SharedString::from("null"),
         Value::Bool(b) => SharedString::from(b.to_string()),
         Value::Number(n) => SharedString::from(n.to_string()),
         Value::String(s) => SharedString::from(s.clone()),
-        // For objects and arrays, show as compact JSON
+        // For arrays, recursively format elements
         Value::Array(arr) => {
-            let json = serde_json::to_string(arr).unwrap_or_else(|_| "[...]".to_string());
-            SharedString::from(json)
+            let formatted: Vec<String> = arr.iter().map(|v| format_bson_value(v)).collect();
+            SharedString::from(format!("[{}]", formatted.join(", ")))
         }
-        Value::Object(obj) => {
-            // Check for MongoDB ObjectId format
-            if let Some(Value::String(s)) = obj.get("$oid") {
-                return SharedString::from(s.clone());
+        Value::Object(obj) => SharedString::from(format_bson_object(obj)),
+    }
+}
+
+/// Format a BSON object, handling MongoDB Extended JSON types
+fn format_bson_object(obj: &serde_json::Map<String, Value>) -> String {
+    // MongoDB ObjectId: {"$oid": "..."}
+    if let Some(Value::String(s)) = obj.get("$oid") {
+        return s.clone();
+    }
+
+    // MongoDB Date: {"$date": "..."} or {"$date": {"$numberLong": "..."}}
+    if let Some(date) = obj.get("$date") {
+        return format_bson_date(date);
+    }
+
+    // MongoDB NumberLong: {"$numberLong": "..."}
+    if let Some(Value::String(s)) = obj.get("$numberLong") {
+        return s.clone();
+    }
+
+    // MongoDB NumberDouble: {"$numberDouble": "..."}
+    if let Some(Value::String(s)) = obj.get("$numberDouble") {
+        // Handle special values
+        if s == "Infinity" || s == "-Infinity" || s == "NaN" {
+            return s.clone();
+        }
+        // Try to format as a clean number
+        if let Ok(n) = s.parse::<f64>() {
+            return format_number(n);
+        }
+        return s.clone();
+    }
+
+    // MongoDB NumberDecimal: {"$numberDecimal": "..."}
+    if let Some(Value::String(s)) = obj.get("$numberDecimal") {
+        return s.clone();
+    }
+
+    // MongoDB NumberInt: {"$numberInt": "..."}
+    if let Some(Value::String(s)) = obj.get("$numberInt") {
+        return s.clone();
+    }
+
+    // MongoDB Binary: {"$binary": {"base64": "...", "subType": "..."}}
+    if let Some(Value::Object(binary)) = obj.get("$binary") {
+        let subtype = binary
+            .get("subType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("00");
+        let base64 = binary
+            .get("base64")
+            .and_then(|v| v.as_str())
+            .unwrap_or("...");
+
+        // UUID subtype (04)
+        if subtype == "04" || subtype == "03" {
+            if let Some(uuid) = decode_uuid_from_base64(base64) {
+                return uuid;
             }
-            // Check for MongoDB date format
-            if let Some(date) = obj.get("$date") {
-                if let Value::String(s) = date {
-                    return SharedString::from(s.clone());
-                }
-                if let Value::Object(date_obj) = date {
-                    if let Some(Value::Number(n)) = date_obj.get("$numberLong") {
-                        // Parse milliseconds timestamp
-                        if let Some(ms) = n.as_i64() {
-                            let secs = ms / 1000;
-                            let dt = chrono::DateTime::from_timestamp(secs, 0);
-                            if let Some(dt) = dt {
-                                return SharedString::from(
-                                    dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-                                );
-                            }
-                        }
+        }
+        return format!("Binary({}, {})", subtype, truncate_str(base64, 20));
+    }
+
+    // MongoDB UUID: {"$uuid": "..."}
+    if let Some(Value::String(s)) = obj.get("$uuid") {
+        return s.clone();
+    }
+
+    // MongoDB Timestamp: {"$timestamp": {"t": ..., "i": ...}}
+    if let Some(Value::Object(ts)) = obj.get("$timestamp") {
+        let t = ts.get("t").and_then(|v| v.as_u64()).unwrap_or(0);
+        let i = ts.get("i").and_then(|v| v.as_u64()).unwrap_or(0);
+        // Format timestamp as datetime
+        if let Some(dt) = chrono::DateTime::from_timestamp(t as i64, 0) {
+            return format!("{} (i:{})", dt.format("%Y-%m-%d %H:%M:%S"), i);
+        }
+        return format!("Timestamp({}, {})", t, i);
+    }
+
+    // MongoDB Regex: {"$regularExpression": {"pattern": "...", "options": "..."}}
+    if let Some(Value::Object(regex)) = obj.get("$regularExpression") {
+        let pattern = regex.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+        let options = regex.get("options").and_then(|v| v.as_str()).unwrap_or("");
+        return format!("/{}/{}", pattern, options);
+    }
+
+    // MongoDB MinKey/MaxKey
+    if obj.get("$minKey").is_some() {
+        return "MinKey".to_string();
+    }
+    if obj.get("$maxKey").is_some() {
+        return "MaxKey".to_string();
+    }
+
+    // MongoDB Undefined
+    if obj.get("$undefined").is_some() {
+        return "undefined".to_string();
+    }
+
+    // MongoDB DBRef: {"$ref": "...", "$id": ...}
+    if let (Some(Value::String(ref_coll)), Some(id)) = (obj.get("$ref"), obj.get("$id")) {
+        let id_str = format_bson_value(id);
+        return format!("DBRef({}, {})", ref_coll, id_str);
+    }
+
+    // MongoDB Code: {"$code": "..."}
+    if let Some(Value::String(code)) = obj.get("$code") {
+        let scope = obj.get("$scope");
+        if scope.is_some() {
+            return format!("Code({}, <scope>)", truncate_str(code, 30));
+        }
+        return format!("Code({})", truncate_str(code, 50));
+    }
+
+    // MongoDB Symbol: {"$symbol": "..."}
+    if let Some(Value::String(s)) = obj.get("$symbol") {
+        return format!("Symbol({})", s);
+    }
+
+    // Regular object - format with human-readable values
+    let formatted: Vec<String> = obj
+        .iter()
+        .map(|(k, v)| format!("{}: {}", k, format_bson_value(v)))
+        .collect();
+    format!("{{{}}}", formatted.join(", "))
+}
+
+/// Format a MongoDB date value
+fn format_bson_date(date: &Value) -> String {
+    match date {
+        Value::String(s) => {
+            // ISO date string - already human readable
+            s.clone()
+        }
+        Value::Object(date_obj) => {
+            // {"$numberLong": "1234567890123"}
+            if let Some(Value::String(ms_str)) = date_obj.get("$numberLong") {
+                if let Ok(ms) = ms_str.parse::<i64>() {
+                    let secs = ms / 1000;
+                    let nsecs = ((ms % 1000) * 1_000_000) as u32;
+                    if let Some(dt) = chrono::DateTime::from_timestamp(secs, nsecs) {
+                        return dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
                     }
                 }
             }
-            // Default: show as JSON
-            let json = serde_json::to_string(obj).unwrap_or_else(|_| "{...}".to_string());
-            SharedString::from(json)
+            // Fallback
+            serde_json::to_string(date_obj).unwrap_or_else(|_| "Invalid Date".to_string())
         }
+        Value::Number(n) => {
+            // Numeric timestamp (milliseconds)
+            if let Some(ms) = n.as_i64() {
+                let secs = ms / 1000;
+                let nsecs = ((ms % 1000) * 1_000_000) as u32;
+                if let Some(dt) = chrono::DateTime::from_timestamp(secs, nsecs) {
+                    return dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+                }
+            }
+            n.to_string()
+        }
+        _ => "Invalid Date".to_string(),
+    }
+}
+
+/// Recursively format a BSON value for display
+fn format_bson_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => format!("\"{}\"", s),
+        Value::Array(arr) => {
+            let formatted: Vec<String> = arr.iter().map(|v| format_bson_value(v)).collect();
+            format!("[{}]", formatted.join(", "))
+        }
+        Value::Object(obj) => format_bson_object(obj),
+    }
+}
+
+/// Format a floating point number, avoiding unnecessary decimals
+fn format_number(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{:.0}", n)
+    } else {
+        format!("{}", n)
+    }
+}
+
+/// Decode a UUID from base64
+fn decode_uuid_from_base64(base64: &str) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .ok()?;
+    if bytes.len() != 16 {
+        return None;
+    }
+    Some(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    ))
+}
+
+/// Truncate a string for display
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() > max_len {
+        format!("{}...", &s[..max_len])
+    } else {
+        s.to_string()
     }
 }
 
@@ -465,7 +650,7 @@ impl Render for CollectionView {
                                 .bg(rgb(0x1e1e1e))
                                 .border_l_1()
                                 .border_color(rgb(0x2a2a2a))
-                                // Header
+                                // Title bar with "View"
                                 .child(
                                     div()
                                         .flex()
@@ -480,9 +665,9 @@ impl Render for CollectionView {
                                         .child(
                                             div()
                                                 .text_size(px(12.0))
-                                                .font_weight(FontWeight::MEDIUM)
+                                                .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(rgb(0xe0e0e0))
-                                                .child(content.column_name.clone()),
+                                                .child("View"),
                                         )
                                         .child(
                                             div()
@@ -500,6 +685,31 @@ impl Render for CollectionView {
                                                         .size(px(12.0))
                                                         .text_color(rgb(0x808080)),
                                                 ),
+                                        ),
+                                )
+                                // Field name label
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .h(px(28.0))
+                                        .px(px(12.0))
+                                        .bg(rgb(0x1e1e1e))
+                                        .border_b_1()
+                                        .border_color(rgb(0x2a2a2a))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .text_color(rgb(0x808080))
+                                                .child("Field: "),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(accent_color)
+                                                .child(content.column_name.clone()),
                                         ),
                                 )
                                 // Content
