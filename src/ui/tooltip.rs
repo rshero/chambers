@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 
 /// A simple tooltip component
 pub struct Tooltip {
@@ -22,8 +22,8 @@ impl Tooltip {
 impl Render for Tooltip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .px(px(8.0))
-            .py(px(4.0))
+            .px(rems(0.5)) // 8px
+            .py(rems(0.25)) // 4px
             .bg(rgb(0x1e1e1e))
             .border_1()
             .border_color(rgb(0x454545))
@@ -31,7 +31,7 @@ impl Render for Tooltip {
             .shadow_md()
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(rems(0.75)) // 12px
                     .text_color(rgb(0xcccccc))
                     .child(self.text.clone()),
             )

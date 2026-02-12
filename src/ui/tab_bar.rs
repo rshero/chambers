@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 
 use crate::ui::tab::{Tab, TabData};
 
@@ -44,7 +44,7 @@ impl TabBar {
             .flex_row()
             .items_center()
             .w_full()
-            .h(px(32.0))
+            .h(rems(2.0)) // 32px
             .bg(bg_color)
             .border_b_1()
             .border_color(border_color)

@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use std::collections::{HashMap, HashSet};
 
 use crate::db::driver::{CollectionInfo, DatabaseInfo};
@@ -10,7 +10,7 @@ use crate::ui::tooltip::Tooltip;
 const MAX_DATABASES_SHOWN: usize = 10;
 
 /// Uniform item height for virtual list (both databases and collections)
-const ITEM_HEIGHT: f32 = 26.0;
+const ITEM_HEIGHT: f32 = 1.625; // 26px in rems
 
 /// Pre-computed flat tree item for efficient rendering
 /// All strings are pre-computed SharedStrings to avoid allocations during render
@@ -552,12 +552,12 @@ impl Render for ConnectionBrowser {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(8.0))
-                        .px(px(8.0))
-                        .py(px(8.0))
+                        .gap(rems(0.5)) // 8px
+                        .px(rems(0.5)) // 8px
+                        .py(rems(0.5)) // 8px
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(rems(0.6875)) // 11px
                                 .text_color(text_muted)
                                 .child("Loading databases..."),
                         ),
@@ -577,12 +577,12 @@ impl Render for ConnectionBrowser {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(6.0))
-                        .px(px(8.0))
-                        .py(px(4.0))
+                        .gap(rems(0.375)) // 6px
+                        .px(rems(0.5)) // 8px
+                        .py(rems(0.25)) // 4px
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(rems(0.6875)) // 11px
                                 .text_color(error_color)
                                 .child("Failed to load databases"),
                         )
@@ -590,12 +590,12 @@ impl Render for ConnectionBrowser {
                             div()
                                 .id("retry-load-databases")
                                 .cursor_pointer()
-                                .w(px(18.0))
-                                .h(px(18.0))
+                                .w(rems(1.125)) // 18px
+                                .h(rems(1.125)) // 18px
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(3.0))
+                                .rounded(px(3.0)) // Keep border radius as px
                                 .hover(|s| s.bg(rgb(0x333333)))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.load_databases(cx);
@@ -604,7 +604,7 @@ impl Render for ConnectionBrowser {
                                 .child(
                                     svg()
                                         .path("icons/refresh.svg")
-                                        .size(px(14.0))
+                                        .size(rems(0.875)) // 14px
                                         .text_color(text_muted),
                                 ),
                         ),
@@ -621,9 +621,9 @@ impl Render for ConnectionBrowser {
                 .w_full()
                 .child(
                     div()
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .text_size(px(11.0))
+                        .px(rems(0.5)) // 8px
+                        .py(rems(0.25)) // 4px
+                        .text_size(rems(0.6875)) // 11px
                         .text_color(text_muted)
                         .child("No databases"),
                 )
@@ -704,12 +704,12 @@ fn render_flat_item(
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(6.0))
+                .gap(rems(0.375)) // 6px
                 .w_full()
-                .h(px(ITEM_HEIGHT))
-                .px(px(8.0))
+                .h(rems(ITEM_HEIGHT))
+                .px(rems(0.5)) // 8px
                 .cursor_pointer()
-                .rounded(px(4.0))
+                .rounded(px(4.0)) // Keep border radius as px
                 .hover(|s| s.bg(hover_bg))
                 .on_click(cx.listener({
                     let db_name = db_name.clone();
@@ -738,7 +738,7 @@ fn render_flat_item(
                         } else {
                             "icons/chevron-right.svg"
                         })
-                        .size(px(10.0))
+                        .size(rems(0.625)) // 10px
                         .text_color(text_muted)
                         .flex_none(),
                 )
@@ -746,7 +746,7 @@ fn render_flat_item(
                 .child(
                     svg()
                         .path("icons/database-folder.svg")
-                        .size(px(14.0))
+                        .size(rems(0.875)) // 14px
                         .text_color(if is_exp { accent_color } else { text_muted })
                         .flex_none(),
                 )
@@ -754,7 +754,7 @@ fn render_flat_item(
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(12.0))
+                        .text_size(rems(0.8125)) // 13px
                         .text_color(if is_exp { accent_color } else { text_color })
                         .overflow_hidden()
                         .text_ellipsis()
@@ -764,7 +764,7 @@ fn render_flat_item(
                 .when_some(formatted_size.clone(), |el, size| {
                     el.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(rems(0.625)) // 10px
                             .text_color(text_muted)
                             .child(size),
                     )
@@ -773,7 +773,7 @@ fn render_flat_item(
                 .when(is_load, |el| {
                     el.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(rems(0.625)) // 10px
                             .text_color(text_muted)
                             .child("..."),
                     )
@@ -798,13 +798,13 @@ fn render_flat_item(
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(6.0))
+                .gap(rems(0.375)) // 6px
                 .w_full()
-                .h(px(ITEM_HEIGHT))
-                .pl(px(32.0)) // Indentation for collections
-                .pr(px(8.0))
+                .h(rems(ITEM_HEIGHT))
+                .pl(rems(2.0)) // 32px - Indentation for collections
+                .pr(rems(0.5)) // 8px
                 .cursor_pointer()
-                .rounded(px(4.0))
+                .rounded(px(4.0)) // Keep border radius as px
                 // Subtle selection: light background tint instead of solid color
                 .when(selected, |el| el.bg(rgba(0x0078d420))) // 12% opacity accent
                 .hover(|s| s.bg(hover_bg))
@@ -833,9 +833,9 @@ fn render_flat_item(
                 // Left accent bar for selected item
                 .child(
                     div()
-                        .w(px(2.0))
-                        .h(px(14.0))
-                        .rounded(px(1.0))
+                        .w(px(2.0)) // Keep thin accent bar as px
+                        .h(rems(0.875)) // 14px
+                        .rounded(px(1.0)) // Keep border radius as px
                         .when(selected, |el| el.bg(accent_color))
                         .when(!selected, |el| el.bg(gpui::transparent_black())),
                 )
@@ -843,7 +843,7 @@ fn render_flat_item(
                 .child(
                     svg()
                         .path("icons/collection.svg")
-                        .size(px(12.0))
+                        .size(rems(0.75)) // 12px
                         .text_color(if selected { accent_color } else { text_muted })
                         .flex_none(),
                 )
@@ -851,7 +851,7 @@ fn render_flat_item(
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.75)) // 12px
                         .text_color(if selected { accent_color } else { text_color })
                         .overflow_hidden()
                         .text_ellipsis()
@@ -861,7 +861,7 @@ fn render_flat_item(
                 .when_some(doc_count.clone(), |el, count| {
                     el.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(rems(0.6875)) // 11px
                             .text_color(text_muted)
                             .child(count),
                     )
@@ -876,11 +876,11 @@ fn render_flat_item(
                 .flex_row()
                 .items_center()
                 .w_full()
-                .h(px(ITEM_HEIGHT))
-                .pl(px(32.0))
+                .h(rems(ITEM_HEIGHT))
+                .pl(rems(2.0)) // 32px
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.75)) // 12px
                         .text_color(text_muted)
                         .child("Loading collections..."),
                 )
@@ -895,14 +895,14 @@ fn render_flat_item(
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(6.0))
+                .gap(rems(0.375)) // 6px
                 .w_full()
-                .h(px(ITEM_HEIGHT))
-                .pl(px(32.0))
-                .pr(px(8.0))
+                .h(rems(ITEM_HEIGHT))
+                .pl(rems(2.0)) // 32px
+                .pr(rems(0.5)) // 8px
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.6875)) // 11px
                         .text_color(error_color)
                         .child("Failed to load"),
                 )
@@ -910,7 +910,7 @@ fn render_flat_item(
                     div()
                         .id(SharedString::from(format!("retry-{}", db_name)))
                         .cursor_pointer()
-                        .text_size(px(10.0))
+                        .text_size(rems(0.625)) // 10px
                         .text_color(accent_color)
                         .hover(|s| s.text_color(text_color))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -928,11 +928,11 @@ fn render_flat_item(
                 .flex_row()
                 .items_center()
                 .w_full()
-                .h(px(ITEM_HEIGHT))
-                .pl(px(32.0))
+                .h(rems(ITEM_HEIGHT))
+                .pl(rems(2.0)) // 32px
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.6875)) // 11px
                         .text_color(text_muted)
                         .child("No collections"),
                 )

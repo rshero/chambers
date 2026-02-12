@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use std::time::Duration;
 
 use crate::ui::tooltip::Tooltip;
@@ -121,9 +121,9 @@ impl IntoElement for Tab {
             .flex_row()
             .items_center()
             .flex_none()
-            .h(px(32.0))
-            .px(px(12.0))
-            .gap(px(8.0))
+            .h(rems(2.0)) // 32px
+            .px(rems(0.75)) // 12px
+            .gap(rems(0.5)) // 8px
             .bg(bg_color)
             .cursor_pointer()
             .hover(|s| s.bg(hover_bg))
@@ -137,7 +137,7 @@ impl IntoElement for Tab {
             .child(
                 svg()
                     .path("icons/collection.svg")
-                    .size(px(14.0))
+                    .size(rems(0.875)) // 14px
                     .text_color(if is_active { accent_color } else { text_color })
                     .flex_none(),
             )
@@ -147,12 +147,12 @@ impl IntoElement for Tab {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(4.0))
+                    .gap(rems(0.25)) // 4px
                     .overflow_hidden()
                     // Title
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(rems(0.8125)) // 13px
                             .text_color(text_color)
                             .overflow_hidden()
                             .text_ellipsis()
@@ -163,7 +163,7 @@ impl IntoElement for Tab {
                     .when_some(data.subtitle.clone(), |el, subtitle| {
                         el.child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(rems(0.6875)) // 11px
                                 .text_color(rgb(0x606060))
                                 .whitespace_nowrap()
                                 .child(format!("[{}]", subtitle)),
@@ -177,16 +177,16 @@ impl IntoElement for Tab {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(16.0))
-                    .h(px(16.0))
-                    .rounded(px(3.0))
+                    .w(rems(1.0)) // 16px
+                    .h(rems(1.0)) // 16px
+                    .rounded(px(3.0)) // Keep border radius as px
                     .flex_none()
                     .when(is_loading, |el| {
                         // Loading spinner
                         el.child(
                             svg()
                                 .path("icons/refresh.svg")
-                                .size(px(12.0))
+                                .size(rems(0.75)) // 12px
                                 .text_color(accent_color)
                                 .with_animation(
                                     "tab-loading-spin",
@@ -212,7 +212,7 @@ impl IntoElement for Tab {
                             .child(
                                 svg()
                                     .path("icons/close.svg")
-                                    .size(px(10.0))
+                                    .size(rems(0.625)) // 10px
                                     .text_color(close_color),
                             )
                     }),

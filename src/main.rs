@@ -10,7 +10,7 @@ mod ui;
 use ui::connection_modal::register_connection_modal_bindings;
 use ui::selectable_text::register_selectable_text_bindings;
 use ui::text_input::register_text_input_bindings;
-use ui::workspace::ChambersWorkspace;
+use ui::workspace::{register_workspace_bindings, ChambersWorkspace};
 
 /// Asset source for loading icons and other resources
 struct Assets {
@@ -131,6 +131,9 @@ fn main() {
 
         // Register connection modal key bindings (Tab navigation)
         register_connection_modal_bindings(cx);
+
+        // Register workspace key bindings (zoom in/out/reset)
+        register_workspace_bindings(cx);
 
         let bounds =
             gpui::Bounds::centered(None, gpui::size(gpui::px(1200.0), gpui::px(800.0)), cx);

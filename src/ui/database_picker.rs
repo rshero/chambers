@@ -1,12 +1,12 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 
 use crate::ui::text_input::TextInput;
 
 /// Maximum number of items to show in picker (like Zed's file finder limit)
 const MAX_PICKER_ITEMS: usize = 100;
 
-/// Pre-calculated item height for uniform_list
-const PICKER_ITEM_HEIGHT: f32 = 32.0;
+/// Pre-calculated item height for uniform_list (in rems)
+const PICKER_ITEM_HEIGHT: f32 = 2.0; // 32px
 
 /// Pre-computed picker item for efficient rendering
 #[derive(Clone)]
@@ -220,7 +220,7 @@ impl Render for DatabasePicker {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(rems(0.5)) // 8px
                     .hover(|s| s.bg(rgb(0x2a2a2a)))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_show_all(cx);
@@ -230,7 +230,7 @@ impl Render for DatabasePicker {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(12.0))
+                            .text_size(rems(0.75)) // 12px
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(0xe0e0e0))
                             .child("Show All"),
@@ -239,16 +239,16 @@ impl Render for DatabasePicker {
             // Divider
             .child(
                 div()
-                    .mx(px(10.0))
-                    .my(px(4.0))
-                    .h(px(1.0))
+                    .mx(rems(0.625)) // 10px
+                    .my(rems(0.25)) // 4px
+                    .h(px(1.0)) // Keep 1px divider
                     .bg(dropdown_border),
             )
             // Database list - using uniform_list for virtualization
             .child(
                 div()
                     .id("database-list-container")
-                    .h(px(240.0)) // Fixed height required for uniform_list
+                    .h(rems(15.0)) // 240px - Fixed height required for uniform_list
                     .overflow_hidden() // Required for uniform_list to work
                     .child(
                         uniform_list(
@@ -295,8 +295,8 @@ impl Render for DatabasePicker {
             // Footer with count
             .child(
                 div()
-                    .px(px(10.0))
-                    .py(px(6.0))
+                    .px(rems(0.625)) // 10px
+                    .py(rems(0.375)) // 6px
                     .border_t_1()
                     .border_color(dropdown_border)
                     .flex()
@@ -305,7 +305,7 @@ impl Render for DatabasePicker {
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(rems(0.6875)) // 11px
                             .text_color(text_muted)
                             .child(format!(
                                 "{} of {} databases",
@@ -316,7 +316,7 @@ impl Render for DatabasePicker {
                     .when(has_search_query, |el| {
                         el.child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(rems(0.6875)) // 11px
                                 .text_color(text_muted)
                                 .child(format!("{} filtered", filtered_count)),
                         )
@@ -338,16 +338,16 @@ where
 {
     div()
         .id(stable_key.clone())
-        .h(px(PICKER_ITEM_HEIGHT)) // Fixed height for virtual list
-        .px(px(10.0))
-        .py(px(6.0))
-        .mx(px(4.0))
-        .rounded(px(4.0))
+        .h(rems(PICKER_ITEM_HEIGHT)) // Fixed height for virtual list
+        .px(rems(0.625)) // 10px
+        .py(rems(0.375)) // 6px
+        .mx(rems(0.25)) // 4px
+        .rounded(px(4.0)) // Keep border radius as px
         .cursor_pointer()
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(8.0))
+        .gap(rems(0.5)) // 8px
         .hover(|s| s.bg(rgb(0x2a2a2a)))
         .on_click(on_click)
         // Checkbox with tick
@@ -356,7 +356,7 @@ where
         .child(
             div()
                 .flex_1()
-                .text_size(px(12.0))
+                .text_size(rems(0.75)) // 12px
                 .text_color(rgb(0xe0e0e0))
                 .overflow_hidden()
                 .text_ellipsis()
@@ -380,19 +380,19 @@ fn render_checkbox(is_checked: bool, accent_color: Rgba) -> impl IntoElement {
     };
 
     div()
-        .w(px(16.0))
-        .h(px(16.0))
+        .w(rems(1.0)) // 16px
+        .h(rems(1.0)) // 16px
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(3.0))
+        .rounded(px(3.0)) // Keep border radius as px
         .border_1()
         .border_color(border_color)
         .bg(bg_color)
         .child(
             svg()
                 .path("icons/check.svg")
-                .size(px(12.0))
+                .size(rems(0.75)) // 12px
                 .text_color(rgb(0xffffff))
                 .when(!is_checked, |el| el.invisible()),
         )

@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use std::f32::consts::PI;
 use std::sync::Arc;
 use std::time::Duration;
@@ -511,7 +511,7 @@ impl ConnectionModal {
                     .py(px(12.0))
                     .border_b_1()
                     .border_color(border_color)
-                    .text_size(px(11.0))
+                    .text_size(rems(0.6875)) // 11px
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(0x808080))
                     .child("SAVED CONNECTIONS"),
@@ -544,10 +544,10 @@ impl ConnectionModal {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_connection(index, cx);
                             }))
-                            .child(img(db_type.icon_path()).size(px(16.0)).flex_none())
+                            .child(img(db_type.icon_path()).size(rems(1.0)).flex_none()) // 16px
                             .child(
                                 div()
-                                    .text_size(px(13.0))
+                                    .text_size(rems(0.8125)) // 13px
                                     .text_color(rgb(0xe0e0e0))
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -560,7 +560,7 @@ impl ConnectionModal {
                             div()
                                 .px(px(16.0))
                                 .py(px(24.0))
-                                .text_size(px(12.0))
+                                .text_size(rems(0.75)) // 12px
                                 .text_color(rgb(0x606060))
                                 .child("No saved connections"),
                         )
@@ -592,12 +592,12 @@ impl ConnectionModal {
                             .child(
                                 svg()
                                     .path("icons/plus.svg")
-                                    .size(px(14.0))
+                                    .size(rems(0.875)) // 14px
                                     .text_color(rgb(0x0078d4)),
                             )
                             .child(
                                 div()
-                                    .text_size(px(13.0))
+                                    .text_size(rems(0.8125)) // 13px
                                     .text_color(rgb(0x0078d4))
                                     .child("New Connection"),
                             ),
@@ -645,11 +645,11 @@ impl ConnectionModal {
                             }))
                     })
                     // Database icon
-                    .child(img(current_type.icon_path()).size(px(20.0)).flex_none())
+                    .child(img(current_type.icon_path()).size(rems(1.25)).flex_none()) // 20px
                     // Database name
                     .child(
                         div()
-                            .text_size(px(14.0))
+                            .text_size(rems(0.875)) // 14px
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(trigger_text_color)
                             .child(format!("{} Connection", current_type.name())),
@@ -659,7 +659,7 @@ impl ConnectionModal {
                         el.child(
                             svg()
                                 .path(chevron_icon)
-                                .size(px(14.0))
+                                .size(rems(0.875)) // 14px
                                 .text_color(trigger_icon_color),
                         )
                     }),
@@ -705,18 +705,18 @@ impl ConnectionModal {
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.change_db_type(db_type, cx);
                                             }))
-                                            .child(img(db_type.icon_path()).size(px(18.0)).flex_none())
+                                            .child(img(db_type.icon_path()).size(rems(1.125)).flex_none()) // 18px
                                             .child(
                                                 div()
                                                     .flex_1()
-                                                    .text_size(px(13.0))
+                                                    .text_size(rems(0.8125)) // 13px
                                                     .text_color(normal_text)
                                                     .child(db_type.name()),
                                             )
                                             .when(is_selected, |el| {
                                                 el.child(
                                                     div()
-                                                        .text_size(px(12.0))
+                                                        .text_size(rems(0.75)) // 12px
                                                         .text_color(accent_color)
                                                         .child("✓"),
                                                 )
@@ -736,7 +736,7 @@ impl ConnectionModal {
             .gap(px(6.0))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(rems(0.75)) // 12px
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(rgb(0x909090))
                     .child(label.to_string()),
@@ -760,14 +760,14 @@ impl ConnectionModal {
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(rems(0.75)) // 12px
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(0x909090))
                             .child(label.to_string()),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(rems(0.6875)) // 11px
                             .text_color(rgb(0x606060))
                             .child(hint.to_string()),
                     ),
@@ -786,7 +786,7 @@ impl ConnectionModal {
                 .child(render_loading_spinner("connection-test-spinner"))
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(rems(0.75)) // 12px
                         .text_color(rgb(0x0078d4))
                         .child("Testing connection..."),
                 ),
@@ -809,14 +809,14 @@ impl ConnectionModal {
                         )
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(rems(0.75)) // 12px
                                 .text_color(rgb(0x4caf50))
                                 .child("Connection successful"),
                         ),
                 )
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(0.6875)) // 11px
                         .text_color(rgb(0x808080))
                         .child(format!("{} ({}ms)", version, latency_ms)),
                 ),
@@ -843,7 +843,7 @@ impl ConnectionModal {
                         )
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(rems(0.75)) // 12px
                                 .text_color(rgb(0xf44336))
                                 .child("Connection failed"),
                         ),
@@ -854,7 +854,7 @@ impl ConnectionModal {
                         .overflow_hidden()
                         .child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(rems(0.6875)) // 11px
                                 .text_color(rgb(0x808080))
                                 .child(msg.clone()),
                         ),
@@ -911,7 +911,7 @@ impl ConnectionModal {
                             .child(div().flex_1().h(px(1.0)).bg(rgb(0x333333)))
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(rems(0.6875)) // 11px
                                     .text_color(rgb(0x606060))
                                     .child("OR"),
                             )
@@ -1007,7 +1007,7 @@ impl ConnectionModal {
                                             .text_color(rgb(0x0078d4))
                                             .hover(|s| s.bg(rgba(0x0078d420)))
                                     })
-                                    .text_size(px(13.0))
+                                    .text_size(rems(0.8125)) // 13px
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.test_connection(cx);
                                     }))
@@ -1027,7 +1027,7 @@ impl ConnectionModal {
                                             .py(px(8.0))
                                             .bg(rgb(0x333333))
                                             .rounded_md()
-                                            .text_size(px(13.0))
+                                            .text_size(rems(0.8125)) // 13px
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(rgb(0xffffff))
                                             .hover(|s| s.bg(rgb(0x404040)))
@@ -1044,7 +1044,7 @@ impl ConnectionModal {
                                             .py(px(8.0))
                                             .bg(rgb(0x0078d4))
                                             .rounded_md()
-                                            .text_size(px(13.0))
+                                            .text_size(rems(0.8125)) // 13px
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(rgb(0xffffff))
                                             .hover(|s| s.bg(rgb(0x1a8cff)))

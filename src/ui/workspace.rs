@@ -10,6 +10,25 @@ use crate::ui::sidebar::{
 };
 use crate::ui::title_bar::TitleBar;
 
+// UI Scaling constants
+const DEFAULT_REM_SIZE: f32 = 16.0;
+const MIN_REM_SIZE: f32 = 12.0;
+const MAX_REM_SIZE: f32 = 24.0;
+const REM_SIZE_STEP: f32 = 1.0;
+
+// Define actions for UI scaling
+actions!(workspace, [ZoomIn, ZoomOut, ZoomReset]);
+
+/// Register workspace key bindings (zoom in/out/reset)
+pub fn register_workspace_bindings(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("ctrl-=", ZoomIn, None),
+        KeyBinding::new("ctrl-+", ZoomIn, None),
+        KeyBinding::new("ctrl--", ZoomOut, None),
+        KeyBinding::new("ctrl-0", ZoomReset, None),
+    ]);
+}
+
 /// Pending collection to open (deferred to render)
 struct PendingCollection {
     collection_name: String,
@@ -18,6 +37,7 @@ struct PendingCollection {
 }
 
 pub struct ChambersWorkspace {
+    focus_handle: FocusHandle,
     title_bar: Entity<TitleBar>,
     sidebar: Entity<Sidebar>,
     pane: Entity<Pane>,
@@ -26,6 +46,7 @@ pub struct ChambersWorkspace {
     pending_db_type: Option<DatabaseType>,
     pending_collection: Option<PendingCollection>,
     pending_edit_connection: Option<Connection>,
+    needs_initial_focus: bool,
 }
 
 impl ChambersWorkspace {
@@ -74,6 +95,7 @@ impl ChambersWorkspace {
         .detach();
 
         Self {
+            focus_handle: cx.focus_handle(),
             title_bar,
             sidebar,
             pane,
@@ -82,6 +104,7 @@ impl ChambersWorkspace {
             pending_db_type: None,
             pending_collection: None,
             pending_edit_connection: None,
+            needs_initial_focus: true,
         }
     }
 
@@ -158,8 +181,22 @@ impl ChambersWorkspace {
     }
 }
 
+impl Focusable for ChambersWorkspace {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for ChambersWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Focus the workspace on first render
+        if self.needs_initial_focus {
+            self.needs_initial_focus = false;
+            cx.defer_in(window, |this, window, _cx| {
+                window.focus(&this.focus_handle);
+            });
+        }
+
         // Handle pending modal open - open in new window
         if let Some(db_type) = self.pending_db_type.take() {
             let storage = self.storage.clone();
@@ -200,11 +237,37 @@ impl Render for ChambersWorkspace {
 
         div()
             .id("workspace")
+            .track_focus(&self.focus_handle)
             .size_full()
             .flex()
             .flex_col()
             .bg(rgb(0x1a1a1a))
             .font_family("Fira Code")
+            // Key context for zoom actions
+            .key_context("Workspace")
+            // Zoom actions
+            .on_action(cx.listener(|_this, _: &ZoomIn, window, cx| {
+                let current: f32 = window.rem_size().into();
+                let new_size = (current + REM_SIZE_STEP).min(MAX_REM_SIZE);
+                window.set_rem_size(px(new_size));
+                // Also update gpui-component theme font_size for consistency
+                gpui_component::theme::Theme::global_mut(cx).font_size = px(new_size);
+                cx.refresh_windows();
+            }))
+            .on_action(cx.listener(|_this, _: &ZoomOut, window, cx| {
+                let current: f32 = window.rem_size().into();
+                let new_size = (current - REM_SIZE_STEP).max(MIN_REM_SIZE);
+                window.set_rem_size(px(new_size));
+                // Also update gpui-component theme font_size for consistency
+                gpui_component::theme::Theme::global_mut(cx).font_size = px(new_size);
+                cx.refresh_windows();
+            }))
+            .on_action(cx.listener(|_this, _: &ZoomReset, window, cx| {
+                window.set_rem_size(px(DEFAULT_REM_SIZE));
+                // Also update gpui-component theme font_size for consistency
+                gpui_component::theme::Theme::global_mut(cx).font_size = px(DEFAULT_REM_SIZE);
+                cx.refresh_windows();
+            }))
             // Handle sidebar drag-to-resize
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<DraggedSidebar>, _, cx| {

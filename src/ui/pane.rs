@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use std::collections::HashMap;
 
 use crate::ui::collection_view::CollectionView;
@@ -201,22 +201,22 @@ impl Render for Pane {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap(px(12.0))
+                        .gap(rems(0.75)) // 12px
                         .child(
                             svg()
                                 .path("icons/collection.svg")
-                                .size(px(48.0))
+                                .size(rems(3.0)) // 48px
                                 .text_color(rgb(0x3a3a3a)),
                         )
                         .child(
                             div()
-                                .text_size(px(14.0))
+                                .text_size(rems(0.875)) // 14px
                                 .text_color(text_muted)
                                 .child("Select a collection to view data"),
                         )
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(rems(0.75)) // 12px
                                 .text_color(rgb(0x606060))
                                 .child("Browse databases in the sidebar"),
                         ),

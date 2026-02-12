@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use gpui_component::{
     table::{Column as GpuiColumn, ColumnSort, Table, TableDelegate, TableEvent, TableState},
     ActiveTheme,
@@ -313,7 +313,7 @@ impl TableDelegate for TableViewDelegate {
             .text_ellipsis()
             .whitespace_nowrap()
             .text_color(text_color)
-            .text_size(px(12.0))
+            .text_size(rems(0.75)) // 12px
             // Cell selection highlight
             .when(is_selected, |this| {
                 this.bg(AppColors::bg_cell_selected())
@@ -358,7 +358,7 @@ impl TableDelegate for TableViewDelegate {
             .flex()
             .items_center()
             // Match toolbar text size (px(12.0))
-            .text_size(px(12.0))
+            .text_size(rems(0.75)) // 12px
             .text_color(cx.theme().muted_foreground)
             // Right-click for header context menu (sort options)
             .on_mouse_down(MouseButton::Right, move |_, window, _| {
@@ -699,8 +699,8 @@ impl TableView {
             .items_center()
             .justify_between()
             .w_full()
-            .h(px(36.0))
-            .px(px(12.0))
+            .h(rems(2.25)) // 36px
+            .px(rems(0.75)) // 12px
             .bg(AppColors::bg_header())
             .border_b_1()
             .border_color(AppColors::border())
@@ -710,7 +710,7 @@ impl TableView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(20.0))
+                    .gap(rems(1.25)) // 20px
                     // Filter
                     .child(
                         div()
@@ -718,21 +718,21 @@ impl TableView {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(6.0))
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
+                            .gap(rems(0.375)) // 6px
+                            .px(rems(0.5)) // 8px
+                            .py(rems(0.25)) // 4px
+                            .rounded(px(4.0)) // Keep border radius as px
                             .cursor_pointer()
                             .hover(|s| s.bg(AppColors::bg_hover()))
                             .child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(rems(0.75)) // 12px
                                     .text_color(AppColors::text_dim())
                                     .child("Filter:"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(rems(0.75)) // 12px
                                     .font_family("monospace")
                                     .text_color(AppColors::text_secondary())
                                     .child(filter_display),
@@ -744,28 +744,28 @@ impl TableView {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(4.0))
+                            .gap(rems(0.25)) // 4px
                             .child(
                                 div()
                                     .id("sort-display")
                                     .flex()
                                     .flex_row()
                                     .items_center()
-                                    .gap(px(6.0))
-                                    .px(px(8.0))
-                                    .py(px(4.0))
-                                    .rounded(px(4.0))
+                                    .gap(rems(0.375)) // 6px
+                                    .px(rems(0.5)) // 8px
+                                    .py(rems(0.25)) // 4px
+                                    .rounded(px(4.0)) // Keep border radius as px
                                     .cursor_pointer()
                                     .hover(|s| s.bg(AppColors::bg_hover()))
                                     .child(
                                         div()
-                                            .text_size(px(12.0))
+                                            .text_size(rems(0.75)) // 12px
                                             .text_color(AppColors::text_dim())
                                             .child("Sort:"),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(12.0))
+                                            .text_size(rems(0.75)) // 12px
                                             .font_family("monospace")
                                             .text_color(if self.sort_field.is_some() {
                                                 AppColors::accent()
@@ -782,8 +782,8 @@ impl TableView {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .size(px(18.0))
-                                        .rounded(px(3.0))
+                                        .size(rems(1.125)) // 18px
+                                        .rounded(px(3.0)) // Keep border radius as px
                                         .cursor_pointer()
                                         .hover(|s| s.bg(AppColors::bg_hover()))
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -798,7 +798,7 @@ impl TableView {
                                         .child(
                                             svg()
                                                 .path("icons/close.svg")
-                                                .size(px(10.0))
+                                                .size(rems(0.625)) // 10px
                                                 .text_color(AppColors::text_dim()),
                                         ),
                                 )
@@ -812,10 +812,10 @@ impl TableView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(4.0))
-                    .px(px(10.0))
-                    .py(px(5.0))
-                    .rounded(px(4.0))
+                    .gap(rems(0.25)) // 4px
+                    .px(rems(0.625)) // 10px
+                    .py(rems(0.3125)) // 5px
+                    .rounded(px(4.0)) // Keep border radius as px
                     .cursor_pointer()
                     .bg(AppColors::bg_active())
                     .border_1()
@@ -829,7 +829,7 @@ impl TableView {
                     }))
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(rems(0.75)) // 12px
                             .text_color(AppColors::text_secondary())
                             .child(match current_view {
                                 ViewMode::Table => "Table",
@@ -839,7 +839,7 @@ impl TableView {
                     .child(
                         svg()
                             .path("icons/chevron-down.svg")
-                            .size(px(12.0))
+                            .size(rems(0.75)) // 12px
                             .text_color(AppColors::text_dim()),
                     ),
             )
@@ -869,7 +869,7 @@ impl TableView {
             .flex_row()
             .items_center()
             .justify_center()
-            .py(px(8.0))
+            .py(rems(0.5)) // 8px
             .bg(AppColors::bg_secondary())
             .border_t_1()
             .border_color(AppColors::border())
@@ -878,10 +878,10 @@ impl TableView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(8.0))
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(px(6.0))
+                    .gap(rems(0.5)) // 8px
+                    .px(rems(0.75)) // 12px
+                    .py(rems(0.375)) // 6px
+                    .rounded(px(6.0)) // Keep border radius as px
                     .bg(AppColors::bg_secondary())
                     .border_1()
                     .border_color(AppColors::border())
@@ -892,9 +892,9 @@ impl TableView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded(px(3.0))
+                            .px(rems(0.5)) // 8px
+                            .py(rems(0.125)) // 2px
+                            .rounded(px(3.0)) // Keep border radius as px
                             .cursor(if can_prev {
                                 CursorStyle::PointingHand
                             } else {
@@ -909,7 +909,7 @@ impl TableView {
                             .child(
                                 svg()
                                     .path("icons/chevron-left.svg")
-                                    .size(px(14.0))
+                                    .size(rems(0.875)) // 14px
                                     .text_color(if can_prev {
                                         AppColors::text_secondary()
                                     } else {
@@ -922,22 +922,22 @@ impl TableView {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(6.0))
+                            .gap(rems(0.375)) // 6px
                             .child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(rems(0.75)) // 12px
                                     .text_color(AppColors::text_secondary())
                                     .child(format!("{} - {}", start_item, end_item)),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(rems(0.6875)) // 11px
                                     .text_color(AppColors::text_dim())
                                     .child("of"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(rems(0.75)) // 12px
                                     .text_color(AppColors::accent())
                                     .child(format!("{}", total_items)),
                             ),
@@ -948,9 +948,9 @@ impl TableView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded(px(3.0))
+                            .px(rems(0.5)) // 8px
+                            .py(rems(0.125)) // 2px
+                            .rounded(px(3.0)) // Keep border radius as px
                             .cursor(if can_next {
                                 CursorStyle::PointingHand
                             } else {
@@ -965,7 +965,7 @@ impl TableView {
                             .child(
                                 svg()
                                     .path("icons/chevron-right.svg")
-                                    .size(px(14.0))
+                                    .size(rems(0.875)) // 14px
                                     .text_color(if can_next {
                                         AppColors::text_secondary()
                                     } else {
@@ -984,7 +984,7 @@ impl TableView {
             .flex_1()
             .min_h_0()
             .bg(AppColors::bg_main())
-            .p(px(16.0))
+            .p(rems(1.0)) // 16px
             .overflow_y_scroll()
             .overflow_x_scroll()
             .when_some(self.json_text_area.clone(), |el, text_area| {

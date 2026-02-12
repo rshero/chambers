@@ -1,10 +1,11 @@
 use std::ops::Range;
 
 use gpui::{
-    div, fill, hsla, point, prelude::*, px, relative, rgb, rgba, size, App, Bounds, ClipboardItem,
-    Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, PaintQuad, Pixels,
-    Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
+    div, fill, hsla, point, prelude::*, px, relative, rems, rgb, rgba, size, App, Bounds,
+    ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
+    LayoutId, MouseButton, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun,
+    UTF16Selection, UnderlineStyle, Window,
 };
 use unicode_segmentation::*;
 
@@ -817,15 +818,15 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .px(px(10.0))
-            .py(px(8.0))
+            .px(rems(0.625)) // 10px
+            .py(rems(0.5)) // 8px
             .bg(input_bg)
             .border_1()
             .border_color(input_border)
-            .rounded(px(4.0))
-            .text_size(px(13.0))
+            .rounded(px(4.0)) // Keep border radius as px
+            .text_size(rems(0.8125)) // 13px
             .text_color(rgb(0xe0e0e0))
-            .line_height(px(20.0))
+            .line_height(rems(1.25)) // 20px
             .overflow_hidden()
             .child(TextElement {
                 input: cx.entity().clone(),

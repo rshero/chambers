@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -863,11 +863,11 @@ impl Render for CollectionView {
                             .flex()
                             .flex_col()
                             .items_center()
-                            .gap(px(12.0))
+                            .gap(rems(0.75)) // 12px
                             .child(
                                 svg()
                                     .path("icons/refresh.svg")
-                                    .size(px(32.0))
+                                    .size(rems(2.0)) // 32px
                                     .text_color(AppColors::accent())
                                     .with_animation(
                                         "loading-spin",
@@ -882,7 +882,7 @@ impl Render for CollectionView {
                             )
                             .child(
                                 div()
-                                    .text_size(px(13.0))
+                                    .text_size(rems(0.8125)) // 13px
                                     .text_color(AppColors::text_muted())
                                     .child("Loading documents..."),
                             ),
@@ -904,24 +904,24 @@ impl Render for CollectionView {
                             .flex()
                             .flex_col()
                             .items_center()
-                            .gap(px(12.0))
+                            .gap(rems(0.75)) // 12px
                             .child(
                                 svg()
                                     .path("icons/close.svg")
-                                    .size(px(32.0))
+                                    .size(rems(2.0)) // 32px
                                     .text_color(AppColors::error()),
                             )
                             .child(
                                 div()
-                                    .text_size(px(13.0))
+                                    .text_size(rems(0.8125)) // 13px
                                     .text_color(AppColors::error())
                                     .child("Failed to load documents"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(rems(0.6875)) // 11px
                                     .text_color(AppColors::text_muted())
-                                    .max_w(px(400.0))
+                                    .max_w(rems(25.0)) // 400px
                                     .text_ellipsis()
                                     .child(error_msg),
                             )
@@ -929,10 +929,10 @@ impl Render for CollectionView {
                                 div()
                                     .id("retry-button")
                                     .cursor_pointer()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .mt(px(8.0))
-                                    .rounded(px(4.0))
+                                    .px(rems(0.75)) // 12px
+                                    .py(rems(0.375)) // 6px
+                                    .mt(rems(0.5)) // 8px
+                                    .rounded(px(4.0)) // Keep border radius as px
                                     .bg(AppColors::bg_active())
                                     .hover(|s| s.bg(AppColors::bg_hover()))
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -940,7 +940,7 @@ impl Render for CollectionView {
                                     }))
                                     .child(
                                         div()
-                                            .text_size(px(12.0))
+                                            .text_size(rems(0.75)) // 12px
                                             .text_color(AppColors::text())
                                             .child("Retry"),
                                     ),
@@ -981,7 +981,7 @@ impl Render for CollectionView {
                                 .id("detail-panel")
                                 .flex()
                                 .flex_col()
-                                .w(px(400.0))
+                                .w(rems(25.0)) // 400px
                                 .h_full()
                                 .bg(AppColors::bg_secondary())
                                 .border_l_1()
@@ -993,14 +993,14 @@ impl Render for CollectionView {
                                         .flex_row()
                                         .items_center()
                                         .justify_between()
-                                        .h(px(32.0))
-                                        .px(px(12.0))
+                                        .h(rems(2.0)) // 32px
+                                        .px(rems(0.75)) // 12px
                                         .bg(AppColors::bg_header())
                                         .border_b_1()
                                         .border_color(AppColors::border_subtle())
                                         .child(
                                             div()
-                                                .text_size(px(12.0))
+                                                .text_size(rems(0.75)) // 12px
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(AppColors::text())
                                                 .child("View"),
@@ -1009,8 +1009,8 @@ impl Render for CollectionView {
                                             div()
                                                 .id("close-detail")
                                                 .cursor_pointer()
-                                                .p(px(4.0))
-                                                .rounded(px(3.0))
+                                                .p(rems(0.25)) // 4px
+                                                .rounded(px(3.0)) // Keep border radius as px
                                                 .hover(|s| s.bg(AppColors::bg_hover()))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.close_detail(cx);
@@ -1018,7 +1018,7 @@ impl Render for CollectionView {
                                                 .child(
                                                     svg()
                                                         .path("icons/close.svg")
-                                                        .size(px(12.0))
+                                                        .size(rems(0.75)) // 12px
                                                         .text_color(AppColors::text_muted()),
                                                 ),
                                         ),
@@ -1029,20 +1029,20 @@ impl Render for CollectionView {
                                         .flex()
                                         .flex_row()
                                         .items_center()
-                                        .h(px(28.0))
-                                        .px(px(12.0))
+                                        .h(rems(1.75)) // 28px
+                                        .px(rems(0.75)) // 12px
                                         .bg(AppColors::bg_secondary())
                                         .border_b_1()
                                         .border_color(AppColors::border_subtle())
                                         .child(
                                             div()
-                                                .text_size(px(11.0))
+                                                .text_size(rems(0.6875)) // 11px
                                                 .text_color(AppColors::text_muted())
                                                 .child("Field: "),
                                         )
                                         .child(
                                             div()
-                                                .text_size(px(11.0))
+                                                .text_size(rems(0.6875)) // 11px
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .text_color(AppColors::accent())
                                                 .child(content.column_name.clone()),
@@ -1053,7 +1053,7 @@ impl Render for CollectionView {
                                     div()
                                         .id("detail-content-scroll")
                                         .flex_1()
-                                        .p(px(12.0))
+                                        .p(rems(0.75)) // 12px
                                         .overflow_y_scroll()
                                         .overflow_x_scroll()
                                         .when_some(detail_text_area, |el, text_area| {
@@ -1079,21 +1079,21 @@ impl Render for CollectionView {
                                     div()
                                         .id("view-dropdown-menu")
                                         .absolute()
-                                        .top(px(38.0)) // toolbar height + small offset
-                                        .right(px(14.0))
+                                        .top(rems(2.375)) // 38px - toolbar height + small offset
+                                        .right(rems(0.875)) // 14px
                                         .occlude()
-                                        .min_w(px(110.0))
+                                        .min_w(rems(6.875)) // 110px
                                         .bg(AppColors::menu_bg())
                                         .border_1()
                                         .border_color(AppColors::border())
-                                        .rounded(px(4.0))
+                                        .rounded(px(4.0)) // Keep border radius as px
                                         .shadow_lg()
-                                        .py(px(4.0))
+                                        .py(rems(0.25)) // 4px
                                         .child(
                                             div()
                                                 .id("view-table")
-                                                .px(px(12.0))
-                                                .py(px(6.0))
+                                                .px(rems(0.75)) // 12px
+                                                .py(rems(0.375)) // 6px
                                                 .cursor_pointer()
                                                 .hover(|s| s.bg(AppColors::menu_hover()))
                                                 .on_click({
@@ -1112,11 +1112,11 @@ impl Render for CollectionView {
                                                         .flex()
                                                         .flex_row()
                                                         .items_center()
-                                                        .gap(px(8.0))
+                                                        .gap(rems(0.5)) // 8px
                                                         .child(
                                                             svg()
                                                                 .path("icons/table.svg")
-                                                                .size(px(14.0))
+                                                                .size(rems(0.875)) // 14px
                                                                 .text_color(
                                                                     if current_view_mode
                                                                         == ViewMode::Table
@@ -1129,7 +1129,7 @@ impl Render for CollectionView {
                                                         )
                                                         .child(
                                                             div()
-                                                                .text_size(px(12.0))
+                                                                .text_size(rems(0.75)) // 12px
                                                                 .text_color(
                                                                     if current_view_mode
                                                                         == ViewMode::Table
@@ -1146,8 +1146,8 @@ impl Render for CollectionView {
                                         .child(
                                             div()
                                                 .id("view-json")
-                                                .px(px(12.0))
-                                                .py(px(6.0))
+                                                .px(rems(0.75)) // 12px
+                                                .py(rems(0.375)) // 6px
                                                 .cursor_pointer()
                                                 .hover(|s| s.bg(AppColors::menu_hover()))
                                                 .on_click({
@@ -1166,11 +1166,11 @@ impl Render for CollectionView {
                                                         .flex()
                                                         .flex_row()
                                                         .items_center()
-                                                        .gap(px(8.0))
+                                                        .gap(rems(0.5)) // 8px
                                                         .child(
                                                             svg()
                                                                 .path("icons/code.svg")
-                                                                .size(px(14.0))
+                                                                .size(rems(0.875)) // 14px
                                                                 .text_color(
                                                                     if current_view_mode
                                                                         == ViewMode::Json
@@ -1183,7 +1183,7 @@ impl Render for CollectionView {
                                                         )
                                                         .child(
                                                             div()
-                                                                .text_size(px(12.0))
+                                                                .text_size(rems(0.75)) // 12px
                                                                 .text_color(
                                                                     if current_view_mode
                                                                         == ViewMode::Json

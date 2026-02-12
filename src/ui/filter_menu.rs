@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use std::collections::HashSet;
 
 use crate::db::DatabaseType;
@@ -82,23 +82,29 @@ impl Render for FilterMenu {
             .bg(bg)
             .border_1()
             .border_color(border_color)
-            .rounded(px(4.0))
+            .rounded(px(4.0)) // Keep border radius as px
             .shadow_md()
-            .py(px(4.0))
-            .w(px(180.0))
+            .py(rems(0.25)) // 4px
+            .w(rems(11.25)) // 180px
             .flex()
             .flex_col()
             // Header
             .child(
                 div()
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .text_size(px(11.0))
+                    .px(rems(0.75)) // 12px
+                    .py(rems(0.375)) // 6px
+                    .text_size(rems(0.6875)) // 11px
                     .text_color(text_muted)
                     .child("Filter by type"),
             )
             // Divider
-            .child(div().mx(px(8.0)).my(px(4.0)).h(px(1.0)).bg(border_color))
+            .child(
+                div()
+                    .mx(rems(0.5))
+                    .my(rems(0.25))
+                    .h(px(1.0))
+                    .bg(border_color),
+            ) // 8px, 4px, 1px
             // Database type options with checkboxes
             .children(all_types.iter().map(|db_type| {
                 let db_type = *db_type;
@@ -106,16 +112,16 @@ impl Render for FilterMenu {
 
                 div()
                     .id(SharedString::from(format!("filter-{}", db_type.name())))
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .mx(px(4.0))
-                    .rounded(px(3.0))
+                    .px(rems(0.5)) // 8px
+                    .py(rems(0.25)) // 4px
+                    .mx(rems(0.25)) // 4px
+                    .rounded(px(3.0)) // Keep border radius as px
                     .cursor_pointer()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(6.0))
-                    .text_size(px(13.0))
+                    .gap(rems(0.375)) // 6px
+                    .text_size(rems(0.8125)) // 13px
                     .text_color(text_color)
                     .hover(|style| style.bg(hover_bg))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -129,22 +135,28 @@ impl Render for FilterMenu {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .size(px(16.0))
+                            .size(rems(1.0)) // 16px
                             .flex_none()
-                            .child(img(db_type.icon_path()).size(px(14.0))),
+                            .child(img(db_type.icon_path()).size(rems(0.875))), // 14px
                     )
                     // Database name
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .h(px(16.0))
-                            .line_height(px(16.0))
+                            .h(rems(1.0)) // 16px
+                            .line_height(rems(1.0)) // 16px
                             .child(db_type.name()),
                     )
             }))
             // Divider
-            .child(div().mx(px(8.0)).my(px(4.0)).h(px(1.0)).bg(border_color))
+            .child(
+                div()
+                    .mx(rems(0.5))
+                    .my(rems(0.25))
+                    .h(px(1.0))
+                    .bg(border_color),
+            ) // 8px, 4px, 1px
             // Clear / Select All row
             .child(
                 div()
@@ -152,16 +164,16 @@ impl Render for FilterMenu {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .px(px(8.0))
-                    .py(px(2.0))
+                    .px(rems(0.5)) // 8px
+                    .py(rems(0.125)) // 2px
                     .child(
                         div()
                             .id("clear-filter")
                             .cursor_pointer()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(3.0))
-                            .text_size(px(10.0))
+                            .px(rems(0.375)) // 6px
+                            .py(rems(0.125)) // 2px
+                            .rounded(px(3.0)) // Keep border radius as px
+                            .text_size(rems(0.625)) // 10px
                             .text_color(if none_selected {
                                 text_muted
                             } else {
@@ -177,10 +189,10 @@ impl Render for FilterMenu {
                         div()
                             .id("select-all-filter")
                             .cursor_pointer()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(3.0))
-                            .text_size(px(10.0))
+                            .px(rems(0.375)) // 6px
+                            .py(rems(0.125)) // 2px
+                            .rounded(px(3.0)) // Keep border radius as px
+                            .text_size(rems(0.625)) // 10px
                             .text_color(if all_selected {
                                 text_muted
                             } else {
@@ -211,19 +223,19 @@ fn render_checkbox(is_checked: bool, accent_color: Rgba) -> impl IntoElement {
     };
 
     div()
-        .w(px(14.0))
-        .h(px(14.0))
+        .w(rems(0.875)) // 14px
+        .h(rems(0.875)) // 14px
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(3.0))
+        .rounded(px(3.0)) // Keep border radius as px
         .border_1()
         .border_color(border_color)
         .bg(bg_color)
         .child(
             svg()
                 .path("icons/check.svg")
-                .size(px(10.0))
+                .size(rems(0.625)) // 10px
                 .text_color(rgb(0xffffff))
                 .when(!is_checked, |el| el.invisible()),
         )

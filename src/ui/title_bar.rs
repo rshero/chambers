@@ -1,6 +1,6 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 
-const TITLE_BAR_HEIGHT: f32 = 34.0;
+const TITLE_BAR_HEIGHT: f32 = 2.125; // 34px in rems
 
 /// Window control button type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,8 +68,8 @@ impl RenderOnce for WindowControlButton {
             .items_center()
             .justify_center()
             .rounded_xl()
-            .w(px(20.0))
-            .h(px(20.0))
+            .w(rems(1.25)) // 20px
+            .h(rems(1.25)) // 20px
             .hover(|style| {
                 if is_close {
                     style.bg(rgb(0xe81123))
@@ -87,7 +87,7 @@ impl RenderOnce for WindowControlButton {
             .child(
                 svg()
                     .path(control_type.icon_path())
-                    .size(px(14.0))
+                    .size(rems(0.875)) // 14px
                     .text_color(rgb(0xcccccc))
                     .hover(|style| style.text_color(rgb(0xffffff))),
             )
@@ -137,8 +137,8 @@ impl RenderOnce for WindowControls {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(8.0))
-            .px(px(12.0))
+            .gap(rems(0.5)) // 8px
+            .px(rems(0.75)) // 12px
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(if is_modal {
                 WindowControlButton::modal(WindowControlType::Minimize)
@@ -185,14 +185,14 @@ impl RenderOnce for MenuButton {
             .items_center()
             .justify_center()
             .rounded_md()
-            .w(px(28.0))
-            .h(px(24.0))
+            .w(rems(1.75)) // 28px
+            .h(rems(1.5)) // 24px
             .hover(|style| style.bg(rgba(0xffffff22)))
             .active(|style| style.bg(rgba(0xffffff11)))
             .child(
                 svg()
                     .path("icons/menu.svg")
-                    .size(px(16.0))
+                    .size(rems(1.0)) // 16px
                     .text_color(rgb(0xcccccc)),
             )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -218,13 +218,13 @@ impl RenderOnce for ProjectName {
             .cursor_pointer()
             .flex()
             .items_center()
-            .px(px(8.0))
-            .py(px(4.0))
+            .px(rems(0.5)) // 8px
+            .py(rems(0.25)) // 4px
             .rounded_md()
             .hover(|style| style.bg(rgba(0xffffff22)))
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(rems(0.8125))
                     .text_color(rgb(0xcccccc))
                     .child(self.name),
             )
@@ -257,8 +257,8 @@ impl TitleBar {
         }
     }
 
-    pub fn height() -> Pixels {
-        px(TITLE_BAR_HEIGHT)
+    pub fn height() -> Rems {
+        rems(TITLE_BAR_HEIGHT)
     }
 }
 
@@ -315,8 +315,8 @@ impl Render for TitleBar {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(8.0))
-                    .pl(px(12.0))
+                    .gap(rems(0.5)) // 8px
+                    .pl(rems(0.75)) // 12px
                     .when(!is_modal, |el| {
                         el.child(MenuButton::new())
                             .child(ProjectName::new("chambers"))
@@ -324,7 +324,7 @@ impl Render for TitleBar {
                     .when_some(title, |el, title| {
                         el.child(
                             div()
-                                .text_size(px(13.0))
+                                .text_size(rems(0.8125))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(rgb(0xe0e0e0))
                                 .child(title),

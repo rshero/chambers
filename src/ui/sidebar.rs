@@ -1,4 +1,4 @@
-use gpui::{prelude::*, *};
+use gpui::{prelude::*, rems, *};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use std::sync::Arc;
 
@@ -850,15 +850,15 @@ impl Sidebar {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(26.0))
-                            .h(px(22.0))
+                            .w(rems(1.625)) // 26px
+                            .h(rems(1.375)) // 22px
                             .rounded_md()
                             .hover(|style| style.bg(bg_hover))
                             .active(|style| style.bg(rgba(0xffffff08)))
                             .child(
                                 svg()
                                     .path("icons/plus.svg")
-                                    .size(px(16.0))
+                                    .size(rems(1.0)) // 16px
                                     .text_color(icon_color)
                                     .hover(|style| style.text_color(icon_hover_color)),
                             )
@@ -870,7 +870,7 @@ impl Sidebar {
                     // Menu positioned below the button
                     .when_some(menu, |el, menu| {
                         el.child(
-                            deferred(div().absolute().top(px(26.0)).left_0().child(menu))
+                            deferred(div().absolute().top(rems(1.625)).left_0().child(menu)) // 26px
                                 .with_priority(1),
                         )
                     }),
@@ -883,8 +883,8 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(26.0))
-                    .h(px(22.0))
+                    .w(rems(1.625)) // 26px
+                    .h(rems(1.375)) // 22px
                     .rounded_md()
                     .hover(|style| style.bg(bg_hover))
                     .active(|style| style.bg(rgba(0xffffff08)))
@@ -895,7 +895,7 @@ impl Sidebar {
                     .child(
                         svg()
                             .path("icons/refresh.svg")
-                            .size(px(16.0))
+                            .size(rems(1.0)) // 16px
                             .text_color(if is_refreshing {
                                 rgb(0x0078d4)
                             } else {
@@ -927,8 +927,8 @@ impl Sidebar {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .w(px(26.0))
-                            .h(px(22.0))
+                            .w(rems(1.625)) // 26px
+                            .h(rems(1.375)) // 22px
                             .rounded_md()
                             .hover(|style| style.bg(bg_hover))
                             .active(|style| style.bg(rgba(0xffffff08)))
@@ -939,7 +939,7 @@ impl Sidebar {
                             .child(
                                 svg()
                                     .path("icons/filter.svg")
-                                    .size(px(16.0))
+                                    .size(rems(1.0)) // 16px
                                     .text_color(if self.type_filter.is_empty() {
                                         icon_color
                                     } else {
@@ -1121,12 +1121,12 @@ impl Sidebar {
                                     } else {
                                         "icons/chevron-right.svg"
                                     })
-                                    .size(px(12.0))
+                                    .size(rems(0.75)) // 12px
                                     .text_color(text_muted)
                                     .flex_none(),
                             )
                             // Database icon
-                            .child(img(db_type.icon_path()).size(px(16.0)).flex_none())
+                            .child(img(db_type.icon_path()).size(rems(1.0)).flex_none()) // 16px
                             // Connection name with count badge inline
                             .child(
                                 div()
@@ -1134,11 +1134,11 @@ impl Sidebar {
                                     .flex()
                                     .flex_row()
                                     .items_center()
-                                    .gap(px(6.0))
+                                    .gap(rems(0.375)) // 6px
                                     .child(
                                         div()
                                             .flex_1()
-                                            .text_size(px(13.0))
+                                            .text_size(rems(0.8125))
                                             .text_color(text_color)
                                             .overflow_hidden()
                                             .text_ellipsis()
@@ -1166,9 +1166,9 @@ impl Sidebar {
                                                             conn_id
                                                         )))
                                                         .cursor_pointer()
-                                                        .px(px(6.0))
-                                                        .py(px(2.0))
-                                                        .rounded(px(4.0))
+                                                        .px(rems(0.375)) // 6px
+                                                        .py(rems(0.125)) // 2px
+                                                        .rounded(px(4.0)) // Keep border radius as px
                                                         .hover(|s| s.bg(rgb(0x333333)))
                                                         .on_click(cx.listener({
                                                             let conn_id = conn_id.clone();
@@ -1183,7 +1183,7 @@ impl Sidebar {
                                                         }))
                                                         .child(
                                                             div()
-                                                                .text_size(px(10.0))
+                                                                .text_size(rems(0.625))
                                                                 .text_color(text_muted)
                                                                 .child(format!(
                                                                     "{} of {}",
@@ -1198,9 +1198,9 @@ impl Sidebar {
                                                             deferred(
                                                                 div()
                                                                     .absolute()
-                                                                    .top(px(26.0))
+                                                                    .top(rems(1.625)) // 26px
                                                                     .left_0()
-                                                                    .w(px(280.0))
+                                                                    .w(rems(17.5)) // 280px
                                                                     .child(picker)
                                                                     .occlude(),
                                                             )
@@ -1215,9 +1215,9 @@ impl Sidebar {
                             // Loading indicator
                             .when(is_expanded && is_loading, |el| {
                                 el.child(
-                                    div().px(px(6.0)).py(px(2.0)).child(
+                                    div().px(rems(0.375)).py(rems(0.125)).child( // 6px, 2px
                                         div()
-                                            .text_size(px(10.0))
+                                            .text_size(rems(0.625)) // 10px
                                             .text_color(accent_color)
                                             .child("Loading..."),
                                     ),
@@ -1231,10 +1231,10 @@ impl Sidebar {
                                         .flex()
                                         .flex_row()
                                         .items_center()
-                                        .gap(px(4.0))
-                                        .px(px(6.0))
-                                        .py(px(2.0))
-                                        .rounded(px(4.0))
+                                        .gap(rems(0.25)) // 4px
+                                        .px(rems(0.375)) // 6px
+                                        .py(rems(0.125)) // 2px
+                                        .rounded(px(4.0)) // Keep border radius as px
                                         .cursor_pointer()
                                         .hover(|s| s.bg(rgb(0x3a2020)))
                                         .on_click(cx.listener({
@@ -1248,12 +1248,12 @@ impl Sidebar {
                                         .child(
                                             svg()
                                                 .path("icons/refresh.svg")
-                                                .size(px(10.0))
+                                                .size(rems(0.625)) // 10px
                                                 .text_color(error_color),
                                         )
                                         .child(
                                             div()
-                                                .text_size(px(10.0))
+                                                .text_size(rems(0.625)) // 10px
                                                 .text_color(error_color)
                                                 .child("Error"),
                                         ),
@@ -1266,18 +1266,18 @@ impl Sidebar {
                             if let Some(browser) = self.connection_browsers.get(&conn_id) {
                                 el.child(
                                     div()
-                                        .pl(px(28.0))
-                                        .pr(px(4.0))
-                                        .py(px(4.0))
+                                        .pl(rems(1.75)) // 28px
+                                        .pr(rems(0.25)) // 4px
+                                        .py(rems(0.25)) // 4px
                                         .child(browser.clone()),
                                 )
                             } else {
                                 el.child(
                                     div()
-                                        .pl(px(36.0))
-                                        .pr(px(8.0))
-                                        .py(px(4.0))
-                                        .text_size(px(12.0))
+                                        .pl(rems(2.25)) // 36px
+                                        .pr(rems(0.5)) // 8px
+                                        .py(rems(0.25)) // 4px
+                                        .text_size(rems(0.75))
                                         .text_color(text_muted)
                                         .child("Loading..."),
                                 )
@@ -1285,10 +1285,10 @@ impl Sidebar {
                         } else {
                             el.child(
                                 div()
-                                    .pl(px(36.0))
-                                    .pr(px(8.0))
-                                    .py(px(4.0))
-                                    .text_size(px(12.0))
+                                    .pl(rems(2.25)) // 36px
+                                    .pr(rems(0.5)) // 8px
+                                    .py(rems(0.25)) // 4px
+                                    .text_size(rems(0.75))
                                     .text_color(text_muted)
                                     .child("Connect to browse..."),
                             )
@@ -1304,17 +1304,17 @@ impl Sidebar {
                             .flex_col()
                             .items_center()
                             .justify_center()
-                            .py(px(32.0))
-                            .gap(px(8.0))
+                            .py(rems(2.0)) // 32px
+                            .gap(rems(0.5)) // 8px
                             .child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(rems(0.75)) // 12px
                                     .text_color(text_muted)
                                     .child("No connections"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(rems(0.6875)) // 11px
                                     .text_color(rgb(0x606060))
                                     .child("Click + to add one"),
                             ),
@@ -1327,17 +1327,17 @@ impl Sidebar {
                             .flex_col()
                             .items_center()
                             .justify_center()
-                            .py(px(32.0))
-                            .gap(px(8.0))
+                            .py(rems(2.0)) // 32px
+                            .gap(rems(0.5)) // 8px
                             .child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(rems(0.75)) // 12px
                                     .text_color(text_muted)
                                     .child("No matching connections"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(rems(0.6875)) // 11px
                                     .text_color(rgb(0x606060))
                                     .child("Adjust filter to see more"),
                             ),
