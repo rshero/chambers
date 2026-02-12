@@ -311,14 +311,10 @@ impl CollectionView {
 
         // Get the raw JSON value for pretty printing in detail view
         let local_row_idx = row_index % PAGE_SIZE;
-        let pretty_value = if let Some(doc) = self.documents.get(local_row_idx) {
-            if let Value::Object(map) = doc {
-                if let Some(raw_value) = map.get(&col_name) {
-                    serde_json::to_string_pretty(raw_value)
-                        .unwrap_or_else(|_| value.to_string())
-                } else {
-                    value.to_string()
-                }
+        let pretty_value = if let Some(Value::Object(map)) = self.documents.get(local_row_idx) {
+            if let Some(raw_value) = map.get(&col_name) {
+                serde_json::to_string_pretty(raw_value)
+                    .unwrap_or_else(|_| value.to_string())
             } else {
                 value.to_string()
             }
@@ -388,14 +384,10 @@ impl CollectionView {
     ) {
         // Get the raw JSON value from documents for pretty printing
         let local_row_idx = row_index % PAGE_SIZE;
-        let pretty_value = if let Some(doc) = self.documents.get(local_row_idx) {
-            if let Value::Object(map) = doc {
-                if let Some(raw_value) = map.get(&col_name) {
-                    serde_json::to_string_pretty(raw_value)
-                        .unwrap_or_else(|_| value.to_string())
-                } else {
-                    value.to_string()
-                }
+        let pretty_value = if let Some(Value::Object(map)) = self.documents.get(local_row_idx) {
+            if let Some(raw_value) = map.get(&col_name) {
+                serde_json::to_string_pretty(raw_value)
+                    .unwrap_or_else(|_| value.to_string())
             } else {
                 value.to_string()
             }
@@ -617,7 +609,7 @@ fn value_to_display_string(value: &Value) -> SharedString {
         Value::String(s) => SharedString::from(s.clone()),
         // For arrays, recursively format elements
         Value::Array(arr) => {
-            let formatted: Vec<String> = arr.iter().map(|v| format_bson_value(v)).collect();
+            let formatted: Vec<String> = arr.iter().map(format_bson_value).collect();
             SharedString::from(format!("[{}]", formatted.join(", ")))
         }
         Value::Object(obj) => SharedString::from(format_bson_object(obj)),
@@ -792,7 +784,7 @@ fn format_bson_value(value: &Value) -> String {
         Value::Number(n) => n.to_string(),
         Value::String(s) => format!("\"{}\"", s),
         Value::Array(arr) => {
-            let formatted: Vec<String> = arr.iter().map(|v| format_bson_value(v)).collect();
+            let formatted: Vec<String> = arr.iter().map(format_bson_value).collect();
             format!("[{}]", formatted.join(", "))
         }
         Value::Object(obj) => format_bson_object(obj),

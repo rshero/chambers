@@ -334,9 +334,9 @@ impl gpui::Element for SelectableTextAreaElement {
         window.set_focus_handle(&focus_handle, cx);
 
         // Create hitbox for mouse interaction - THIS IS CRITICAL
-        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        
 
-        hitbox
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
 
     fn paint(

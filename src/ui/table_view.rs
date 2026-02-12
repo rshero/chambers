@@ -601,7 +601,7 @@ impl TableView {
 
     #[allow(dead_code)]
     pub fn selected_row(&self) -> Option<usize> {
-        self.table_state.as_ref().and_then(|_ts| {
+        self.table_state.as_ref().and({
             // We can't easily read the state here without cx, so return None
             None
         })

@@ -128,12 +128,12 @@ impl DatabasePicker {
 
     /// Focus the search input
     pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_input.focus_handle(&**cx).focus(window);
+        self.search_input.focus_handle(cx).focus(window);
     }
 
     /// Update filtered indices if query changed
     fn update_filtered_indices(&mut self, cx: &Context<Self>) {
-        let query = self.search_input.read(&**cx).text().to_lowercase();
+        let query = self.search_input.read(cx).text().to_lowercase();
 
         // Only recompute if query changed
         if query == self.last_query {
