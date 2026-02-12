@@ -42,4 +42,4 @@ cargo build --release --features full
 
 ## License
 
-MIT
+GPLv3
