@@ -1,10 +1,17 @@
 use gpui::{prelude::*, *};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
 use crate::db::driver::{create_connection, ConnectionConfig};
 use crate::db::DatabaseType;
-use crate::ui::table_view::{CellClicked, Column, PageChangeRequested, Row, TableView, PAGE_SIZE};
+use crate::ui::selectable_text::SelectableTextArea;
+use crate::ui::table_view::{
+    CellContextMenuRequested, CellDoubleClicked, Column, HeaderContextMenuRequested,
+    PageChangeRequested, Row, SortChangeRequested, SortDirection, TableView, ViewDropdownToggled,
+    ViewMode, ViewModeChanged, PAGE_SIZE,
+};
+use crate::ui::theme::AppColors;
 
 /// Loading state change event
 #[derive(Clone)]
@@ -37,13 +44,46 @@ pub struct CollectionView {
     current_page: usize,
     /// Detail panel content (for viewing large values)
     detail_content: Option<DetailContent>,
+    /// Selectable text area for detail panel
+    detail_text_area: Option<Entity<SelectableTextArea>>,
+    /// Current sort field
+    sort_field: Option<String>,
+    /// Current sort direction
+    sort_direction: Option<SortDirection>,
+    /// Current filter query
+    #[allow(dead_code)]
+    filter_query: String,
+    /// Context menu using gpui-component's PopupMenu
+    context_menu: Option<Entity<PopupMenu>>,
+    /// Position where context menu should appear (window coordinates)
+    context_menu_position: Option<Point<Pixels>>,
+    /// Subscription for context menu dismiss events
+    _context_menu_subscription: Option<Subscription>,
+    /// Pending header context menu request (deferred from subscribe)
+    pending_header_ctx_menu: Option<(String, Point<Pixels>)>,
+    /// Pending cell context menu request (deferred from subscribe)
+    pending_cell_ctx_menu: Option<PendingCellContextMenu>,
+    /// View dropdown open state
+    view_dropdown_open: bool,
+    /// Current view mode (tracked here for dropdown rendering)
+    current_view_mode: ViewMode,
+}
+
+/// Pending cell context menu request data
+#[derive(Clone)]
+#[allow(dead_code)]
+struct PendingCellContextMenu {
+    row_index: usize,
+    col_index: usize,
+    col_name: String,
+    value: SharedString,
+    position: Point<Pixels>,
 }
 
 /// Content for the detail panel
 #[derive(Clone)]
 struct DetailContent {
     column_name: String,
-    value: String,
 }
 
 impl CollectionView {
@@ -61,8 +101,48 @@ impl CollectionView {
         })
         .detach();
 
-        cx.subscribe(&table_view, |this, _, event: &CellClicked, cx| {
-            this.on_cell_clicked(event, cx);
+        // NOTE: CellClicked subscription removed - panel should only open from context menu "View" action
+        // The CellClicked event is still emitted but we don't subscribe to it here
+
+        cx.subscribe(&table_view, |this, _, event: &CellDoubleClicked, cx| {
+            this.on_cell_double_clicked(event, cx);
+        })
+        .detach();
+
+        cx.subscribe(&table_view, |this, _, event: &SortChangeRequested, cx| {
+            this.on_sort_change(event, cx);
+        })
+        .detach();
+
+        cx.subscribe(&table_view, |this, _, event: &ViewModeChanged, cx| {
+            this.on_view_mode_change(event.0, cx);
+        })
+        .detach();
+
+        cx.subscribe(&table_view, |this, _, event: &HeaderContextMenuRequested, cx| {
+            // Defer to render() where we have window access
+            this.pending_header_ctx_menu = Some((event.col_name.clone(), event.position));
+            cx.notify();
+        })
+        .detach();
+
+        cx.subscribe(&table_view, |this, _, event: &ViewDropdownToggled, cx| {
+            this.view_dropdown_open = event.open;
+            this.current_view_mode = event.view_mode;
+            cx.notify();
+        })
+        .detach();
+
+        cx.subscribe(&table_view, |this, _, event: &CellContextMenuRequested, cx| {
+            // Defer to render() where we have window access
+            this.pending_cell_ctx_menu = Some(PendingCellContextMenu {
+                row_index: event.row_index,
+                col_index: event.col_index,
+                col_name: event.col_name.clone(),
+                value: event.value.clone(),
+                position: event.position,
+            });
+            cx.notify();
         })
         .detach();
 
@@ -77,6 +157,17 @@ impl CollectionView {
             total_count: 0,
             current_page: 0,
             detail_content: None,
+            detail_text_area: None,
+            sort_field: None,
+            sort_direction: None,
+            filter_query: String::new(),
+            context_menu: None,
+            context_menu_position: None,
+            _context_menu_subscription: None,
+            pending_header_ctx_menu: None,
+            pending_cell_ctx_menu: None,
+            view_dropdown_open: false,
+            current_view_mode: ViewMode::Table,
         };
 
         // Start loading data
@@ -91,24 +182,261 @@ impl CollectionView {
         self.load_documents(cx);
     }
 
-    /// Handle cell click for detail view
-    fn on_cell_clicked(&mut self, event: &CellClicked, cx: &mut Context<Self>) {
-        let column_name = self
-            .columns
-            .get(event.col_index)
-            .cloned()
-            .unwrap_or_default();
+    /// Handle cell double-click to copy value
+    fn on_cell_double_clicked(&mut self, event: &CellDoubleClicked, cx: &mut Context<Self>) {
+        // Copy the value to clipboard
+        cx.write_to_clipboard(ClipboardItem::new_string(event.value.to_string()));
+        cx.notify();
+    }
 
-        self.detail_content = Some(DetailContent {
-            column_name,
-            value: event.value.to_string(),
-        });
+    /// Handle sort change
+    fn on_sort_change(&mut self, event: &SortChangeRequested, cx: &mut Context<Self>) {
+        // Empty field means clear sort
+        if event.field.is_empty() {
+            self.sort_field = None;
+            self.sort_direction = None;
+        } else {
+            self.sort_field = Some(event.field.clone());
+            self.sort_direction = Some(event.direction);
+        }
+        self.current_page = 0; // Reset to first page when sorting changes
+        self.load_documents(cx);
+    }
+
+    /// Handle view mode change
+    fn on_view_mode_change(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+        if mode == ViewMode::Json {
+            // Generate pretty-printed JSON for the current documents
+            let json = serde_json::to_string_pretty(&self.documents)
+                .unwrap_or_else(|_| "[]".to_string());
+            self.table_view.update(cx, |table, cx| {
+                table.set_raw_json(json, cx);
+            });
+        }
         cx.notify();
     }
 
     /// Close detail panel
     fn close_detail(&mut self, cx: &mut Context<Self>) {
         self.detail_content = None;
+        self.detail_text_area = None;
+        cx.notify();
+    }
+
+    /// Show header context menu (called from render where window is available)
+    fn show_header_context_menu(
+        &mut self,
+        col_name: String,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Build the menu using gpui-component's PopupMenu
+        let col_name_for_asc = col_name.clone();
+        let col_name_for_desc = col_name.clone();
+        let col_name_for_copy = col_name.clone();
+        let table_view = self.table_view.clone();
+        let table_view_for_desc = self.table_view.clone();
+
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            menu.item(
+                PopupMenuItem::new("Copy")
+                    .icon(gpui_component::IconName::Copy)
+                    .on_click({
+                        let col_name = col_name_for_copy.clone();
+                        move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(col_name.clone()));
+                        }
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("Sort Ascending")
+                    .icon(gpui_component::IconName::ChevronUp)
+                    .on_click({
+                        let col_name = col_name_for_asc.clone();
+                        let table_view = table_view.clone();
+                        move |_, _, cx| {
+                            table_view.update(cx, |table, cx| {
+                                table.set_sort(Some(col_name.clone()), Some(SortDirection::Ascending), cx);
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("Sort Descending")
+                    .icon(gpui_component::IconName::ChevronDown)
+                    .on_click({
+                        let col_name = col_name_for_desc.clone();
+                        let table_view = table_view_for_desc.clone();
+                        move |_, _, cx| {
+                            table_view.update(cx, |table, cx| {
+                                table.set_sort(Some(col_name.clone()), Some(SortDirection::Descending), cx);
+                            });
+                        }
+                    }),
+            )
+        });
+
+        // Subscribe to dismiss events
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.context_menu = None;
+            this.context_menu_position = None;
+            this._context_menu_subscription = None;
+            cx.notify();
+        });
+
+        // Focus the menu
+        menu.read(cx).focus_handle(cx).focus(window);
+
+        self.context_menu = Some(menu);
+        self.context_menu_position = Some(position);
+        self._context_menu_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    /// Show cell context menu (called from render where window is available)
+    fn show_cell_context_menu(
+        &mut self,
+        pending: PendingCellContextMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let row_index = pending.row_index;
+        let _col_index = pending.col_index;
+        let col_name = pending.col_name.clone();
+        let value = pending.value.clone();
+        let value_for_copy = pending.value.to_string();
+        let position = pending.position;
+
+        // Get the raw JSON value for pretty printing in detail view
+        let local_row_idx = row_index % PAGE_SIZE;
+        let pretty_value = if let Some(doc) = self.documents.get(local_row_idx) {
+            if let Value::Object(map) = doc {
+                if let Some(raw_value) = map.get(&col_name) {
+                    serde_json::to_string_pretty(raw_value)
+                        .unwrap_or_else(|_| value.to_string())
+                } else {
+                    value.to_string()
+                }
+            } else {
+                value.to_string()
+            }
+        } else {
+            value.to_string()
+        };
+
+        let col_name_for_view = col_name.clone();
+        let pretty_value_for_view = pretty_value.clone();
+
+        // Get entity for View action callback
+        let view_entity = cx.entity().clone();
+
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            menu.item(
+                PopupMenuItem::new("View")
+                    .icon(gpui_component::IconName::Eye)
+                    .on_click({
+                        let col_name = col_name_for_view.clone();
+                        let pretty_value = pretty_value_for_view.clone();
+                        let entity = view_entity.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |this, cx| {
+                                this.open_detail_panel(col_name.clone(), pretty_value.clone(), cx);
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("Copy")
+                    .icon(gpui_component::IconName::Copy)
+                    .on_click({
+                        let value = value_for_copy.clone();
+                        move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                        }
+                    }),
+            )
+        });
+
+        // Subscribe to dismiss events
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.context_menu = None;
+            this.context_menu_position = None;
+            this._context_menu_subscription = None;
+            cx.notify();
+        });
+
+        // Focus the menu
+        menu.read(cx).focus_handle(cx).focus(window);
+
+        self.context_menu = Some(menu);
+        self.context_menu_position = Some(position);
+        self._context_menu_subscription = Some(subscription);
+        cx.notify();
+    }
+
+    /// Open detail panel for a specific cell
+    #[allow(dead_code)]
+    fn open_detail_for_cell(
+        &mut self,
+        row_index: usize,
+        _col_index: usize,
+        col_name: String,
+        value: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        // Get the raw JSON value from documents for pretty printing
+        let local_row_idx = row_index % PAGE_SIZE;
+        let pretty_value = if let Some(doc) = self.documents.get(local_row_idx) {
+            if let Value::Object(map) = doc {
+                if let Some(raw_value) = map.get(&col_name) {
+                    serde_json::to_string_pretty(raw_value)
+                        .unwrap_or_else(|_| value.to_string())
+                } else {
+                    value.to_string()
+                }
+            } else {
+                value.to_string()
+            }
+        } else {
+            value.to_string()
+        };
+
+        // Create or update the selectable text area
+        let content = pretty_value.clone();
+        if let Some(text_area) = &self.detail_text_area {
+            text_area.update(cx, |ta, cx| {
+                ta.set_content(content, cx);
+            });
+        } else {
+            self.detail_text_area = Some(cx.new(|cx| SelectableTextArea::new(cx, content)));
+        }
+
+        self.detail_content = Some(DetailContent {
+            column_name: col_name,
+        });
+        cx.notify();
+    }
+
+    /// Open detail panel directly with pre-computed values (from context menu "View" action)
+    fn open_detail_panel(&mut self, col_name: String, pretty_value: String, cx: &mut Context<Self>) {
+        // Create or update the selectable text area
+        if let Some(text_area) = &self.detail_text_area {
+            text_area.update(cx, |ta, cx| {
+                ta.set_content(pretty_value, cx);
+            });
+        } else {
+            self.detail_text_area = Some(cx.new(|cx| SelectableTextArea::new(cx, pretty_value)));
+        }
+
+        self.detail_content = Some(DetailContent { column_name: col_name });
+        cx.notify();
+    }
+
+    /// Close view dropdown
+    fn close_view_dropdown(&mut self, cx: &mut Context<Self>) {
+        self.view_dropdown_open = false;
         cx.notify();
     }
 
@@ -509,21 +837,25 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 impl Render for CollectionView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let bg_color = rgb(0x1a1a1a);
-        let text_muted = rgb(0x808080);
-        let error_color = rgb(0xf44336);
-        let accent_color = rgb(0x0078d4);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Process pending header context menu (deferred from subscribe which lacks window)
+        if let Some((col_name, position)) = self.pending_header_ctx_menu.take() {
+            self.show_header_context_menu(col_name, position, window, cx);
+        }
+
+        // Process pending cell context menu (deferred from subscribe which lacks window)
+        if let Some(pending) = self.pending_cell_ctx_menu.take() {
+            self.show_cell_context_menu(pending, window, cx);
+        }
 
         match &self.loading_state {
             LoadingState::Loading => {
-                // Loading state
                 div()
                     .id("collection-view-loading")
                     .flex()
                     .flex_col()
                     .size_full()
-                    .bg(bg_color)
+                    .bg(AppColors::bg_main())
                     .items_center()
                     .justify_center()
                     .child(
@@ -536,7 +868,7 @@ impl Render for CollectionView {
                                 svg()
                                     .path("icons/refresh.svg")
                                     .size(px(32.0))
-                                    .text_color(accent_color)
+                                    .text_color(AppColors::accent())
                                     .with_animation(
                                         "loading-spin",
                                         Animation::new(std::time::Duration::from_millis(1000))
@@ -551,7 +883,7 @@ impl Render for CollectionView {
                             .child(
                                 div()
                                     .text_size(px(13.0))
-                                    .text_color(text_muted)
+                                    .text_color(AppColors::text_muted())
                                     .child("Loading documents..."),
                             ),
                     )
@@ -559,13 +891,12 @@ impl Render for CollectionView {
             }
             LoadingState::Error(err) => {
                 let error_msg = err.clone();
-                // Error state
                 div()
                     .id("collection-view-error")
                     .flex()
                     .flex_col()
                     .size_full()
-                    .bg(bg_color)
+                    .bg(AppColors::bg_main())
                     .items_center()
                     .justify_center()
                     .child(
@@ -578,18 +909,18 @@ impl Render for CollectionView {
                                 svg()
                                     .path("icons/close.svg")
                                     .size(px(32.0))
-                                    .text_color(error_color),
+                                    .text_color(AppColors::error()),
                             )
                             .child(
                                 div()
                                     .text_size(px(13.0))
-                                    .text_color(error_color)
+                                    .text_color(AppColors::error())
                                     .child("Failed to load documents"),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.0))
-                                    .text_color(text_muted)
+                                    .text_color(AppColors::text_muted())
                                     .max_w(px(400.0))
                                     .text_ellipsis()
                                     .child(error_msg),
@@ -602,15 +933,15 @@ impl Render for CollectionView {
                                     .py(px(6.0))
                                     .mt(px(8.0))
                                     .rounded(px(4.0))
-                                    .bg(rgb(0x2a2a2a))
-                                    .hover(|s| s.bg(rgb(0x3a3a3a)))
+                                    .bg(AppColors::bg_active())
+                                    .hover(|s| s.bg(AppColors::bg_hover()))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.retry(cx);
                                     }))
                                     .child(
                                         div()
                                             .text_size(px(12.0))
-                                            .text_color(rgb(0xe0e0e0))
+                                            .text_color(AppColors::text())
                                             .child("Retry"),
                                     ),
                             ),
@@ -620,24 +951,29 @@ impl Render for CollectionView {
             LoadingState::Loaded => {
                 let has_detail = self.detail_content.is_some();
                 let detail_content = self.detail_content.clone();
+                let detail_text_area = self.detail_text_area.clone();
+                let context_menu = self.context_menu.clone();
+                let view_dropdown_open = self.view_dropdown_open;
+                let current_view_mode = self.current_view_mode;
+                let table_view = self.table_view.clone();
 
-                // Loaded state - show table with optional detail panel
                 div()
                     .id("collection-view")
                     .flex()
                     .flex_row()
                     .size_full()
-                    .bg(bg_color)
+                    .bg(AppColors::bg_main())
+                    .relative()
                     // Table view
                     .child(
                         div()
                             .flex_1()
-                            .min_w_0() // Critical: allow shrinking below content width for horizontal scroll
+                            .min_w_0()
                             .h_full()
                             .overflow_hidden()
                             .child(self.table_view.clone()),
                     )
-                    // Detail panel (when viewing large content)
+                    // Detail panel
                     .when(has_detail, |el| {
                         let content = detail_content.unwrap();
                         el.child(
@@ -647,10 +983,10 @@ impl Render for CollectionView {
                                 .flex_col()
                                 .w(px(400.0))
                                 .h_full()
-                                .bg(rgb(0x1e1e1e))
+                                .bg(AppColors::bg_secondary())
                                 .border_l_1()
-                                .border_color(rgb(0x2a2a2a))
-                                // Title bar with "View"
+                                .border_color(AppColors::border_subtle())
+                                // Title bar
                                 .child(
                                     div()
                                         .flex()
@@ -659,14 +995,14 @@ impl Render for CollectionView {
                                         .justify_between()
                                         .h(px(32.0))
                                         .px(px(12.0))
-                                        .bg(rgb(0x252525))
+                                        .bg(AppColors::bg_header())
                                         .border_b_1()
-                                        .border_color(rgb(0x2a2a2a))
+                                        .border_color(AppColors::border_subtle())
                                         .child(
                                             div()
                                                 .text_size(px(12.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(rgb(0xe0e0e0))
+                                                .text_color(AppColors::text())
                                                 .child("View"),
                                         )
                                         .child(
@@ -675,7 +1011,7 @@ impl Render for CollectionView {
                                                 .cursor_pointer()
                                                 .p(px(4.0))
                                                 .rounded(px(3.0))
-                                                .hover(|s| s.bg(rgb(0x3a3a3a)))
+                                                .hover(|s| s.bg(AppColors::bg_hover()))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.close_detail(cx);
                                                 }))
@@ -683,11 +1019,11 @@ impl Render for CollectionView {
                                                     svg()
                                                         .path("icons/close.svg")
                                                         .size(px(12.0))
-                                                        .text_color(rgb(0x808080)),
+                                                        .text_color(AppColors::text_muted()),
                                                 ),
                                         ),
                                 )
-                                // Field name label
+                                // Field name
                                 .child(
                                     div()
                                         .flex()
@@ -695,39 +1031,195 @@ impl Render for CollectionView {
                                         .items_center()
                                         .h(px(28.0))
                                         .px(px(12.0))
-                                        .bg(rgb(0x1e1e1e))
+                                        .bg(AppColors::bg_secondary())
                                         .border_b_1()
-                                        .border_color(rgb(0x2a2a2a))
+                                        .border_color(AppColors::border_subtle())
                                         .child(
                                             div()
                                                 .text_size(px(11.0))
-                                                .text_color(rgb(0x808080))
+                                                .text_color(AppColors::text_muted())
                                                 .child("Field: "),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(11.0))
                                                 .font_weight(FontWeight::MEDIUM)
-                                                .text_color(accent_color)
+                                                .text_color(AppColors::accent())
                                                 .child(content.column_name.clone()),
                                         ),
                                 )
-                                // Content
+                                // Content — selectable text area
                                 .child(
                                     div()
                                         .id("detail-content-scroll")
                                         .flex_1()
                                         .p(px(12.0))
                                         .overflow_y_scroll()
+                                        .overflow_x_scroll()
+                                        .when_some(detail_text_area, |el, text_area| {
+                                            el.child(text_area)
+                                        }),
+                                ),
+                        )
+                    })
+                    // View dropdown overlay (rendered here, outside overflow_hidden)
+                    .when(view_dropdown_open, |el| {
+                        el.child(
+                            div()
+                                .id("view-dropdown-backdrop")
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                    this.close_view_dropdown(cx);
+                                }))
+                                .child(
+                                    div()
+                                        .id("view-dropdown-menu")
+                                        .absolute()
+                                        .top(px(38.0)) // toolbar height + small offset
+                                        .right(px(14.0))
+                                        .occlude()
+                                        .min_w(px(110.0))
+                                        .bg(AppColors::menu_bg())
+                                        .border_1()
+                                        .border_color(AppColors::border())
+                                        .rounded(px(4.0))
+                                        .shadow_lg()
+                                        .py(px(4.0))
                                         .child(
                                             div()
-                                                .text_size(px(12.0))
-                                                .text_color(rgb(0xe0e0e0))
-                                                .whitespace_normal()
-                                                .child(content.value),
+                                                .id("view-table")
+                                                .px(px(12.0))
+                                                .py(px(6.0))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(AppColors::menu_hover()))
+                                                .on_click({
+                                                    let table_view = table_view.clone();
+                                                    cx.listener(move |this, _, _, cx| {
+                                                        table_view.update(cx, |t, cx| {
+                                                            t.set_view_mode(ViewMode::Table, cx);
+                                                        });
+                                                        this.view_dropdown_open = false;
+                                                        this.current_view_mode = ViewMode::Table;
+                                                        cx.notify();
+                                                    })
+                                                })
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap(px(8.0))
+                                                        .child(
+                                                            svg()
+                                                                .path("icons/table.svg")
+                                                                .size(px(14.0))
+                                                                .text_color(
+                                                                    if current_view_mode
+                                                                        == ViewMode::Table
+                                                                    {
+                                                                        AppColors::accent()
+                                                                    } else {
+                                                                        AppColors::text_dim()
+                                                                    },
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.0))
+                                                                .text_color(
+                                                                    if current_view_mode
+                                                                        == ViewMode::Table
+                                                                    {
+                                                                        AppColors::accent()
+                                                                    } else {
+                                                                        AppColors::text_secondary()
+                                                                    },
+                                                                )
+                                                                .child("Table"),
+                                                        ),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("view-json")
+                                                .px(px(12.0))
+                                                .py(px(6.0))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(AppColors::menu_hover()))
+                                                .on_click({
+                                                    let table_view = table_view.clone();
+                                                    cx.listener(move |this, _, _, cx| {
+                                                        table_view.update(cx, |t, cx| {
+                                                            t.set_view_mode(ViewMode::Json, cx);
+                                                        });
+                                                        this.view_dropdown_open = false;
+                                                        this.current_view_mode = ViewMode::Json;
+                                                        cx.notify();
+                                                    })
+                                                })
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap(px(8.0))
+                                                        .child(
+                                                            svg()
+                                                                .path("icons/code.svg")
+                                                                .size(px(14.0))
+                                                                .text_color(
+                                                                    if current_view_mode
+                                                                        == ViewMode::Json
+                                                                    {
+                                                                        AppColors::accent()
+                                                                    } else {
+                                                                        AppColors::text_dim()
+                                                                    },
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.0))
+                                                                .text_color(
+                                                                    if current_view_mode
+                                                                        == ViewMode::Json
+                                                                    {
+                                                                        AppColors::accent()
+                                                                    } else {
+                                                                        AppColors::text_secondary()
+                                                                    },
+                                                                )
+                                                                .child("JSON"),
+                                                        ),
+                                                ),
                                         ),
                                 ),
                         )
+                    })
+                    // Context menu overlay (rendered here, outside overflow_hidden)
+                    .when_some(context_menu, |el, menu| {
+                        if let Some(position) = self.context_menu_position {
+                            el.child(
+                                deferred(
+                                    anchored()
+                                        .position(position)
+                                        .snap_to_window_with_margin(px(8.0))
+                                        .anchor(Corner::TopLeft)
+                                        .child(
+                                            div()
+                                                .occlude()
+                                                .child(menu)
+                                        )
+                                )
+                                .with_priority(2)
+                            )
+                        } else {
+                            el.child(deferred(div().occlude().child(menu)).with_priority(2))
+                        }
                     })
                     .into_any_element()
             }

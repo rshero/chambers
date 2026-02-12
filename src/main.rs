@@ -2,12 +2,13 @@ use std::borrow::Cow;
 use std::fs;
 use std::path::PathBuf;
 
-use gpui::{App, AppContext, Application, AssetSource, SharedString, WindowDecorations};
+use gpui::{App, AppContext, Application, AssetSource, SharedString, WindowDecorations, px, rgb};
 
 mod db;
 mod ui;
 
 use ui::connection_modal::register_connection_modal_bindings;
+use ui::selectable_text::register_selectable_text_bindings;
 use ui::text_input::register_text_input_bindings;
 use ui::workspace::ChambersWorkspace;
 
@@ -73,6 +74,48 @@ fn main() {
     let assets = Assets { base: assets_path };
 
     Application::new().with_assets(assets).run(|cx: &mut App| {
+        // Initialize gpui-component (must be called before using any GPUI Component features)
+        gpui_component::init(cx);
+
+        // Set dark theme for gpui-component (the app uses dark colors)
+        gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
+
+        // Customize theme colors to match app's dark gray background (#1a1a1a)
+        // instead of gpui-component's default pure black (#0a0a0a)
+        {
+            let theme = gpui_component::theme::Theme::global_mut(cx);
+            let bg_main = rgb(0x1a1a1a).into();
+            let bg_header = rgb(0x252525).into();
+            let bg_secondary = rgb(0x1e1e1e).into();
+            let border = rgb(0x3a3a3a).into();
+            let bg_hover = rgb(0x3a3a3a).into();
+
+            // Table colors
+            theme.table = bg_main;
+            theme.table_head = bg_header;
+            theme.table_even = bg_secondary;
+            theme.table_hover = rgb(0x2a2a2a).into();
+            theme.table_row_border = border;
+            // Disable row selection highlight (we use cell-level highlighting instead)
+            theme.table_active = gpui::transparent_black();
+            theme.table_active_border = gpui::transparent_black();
+
+            // General background colors for consistency
+            theme.background = bg_main;
+            theme.popover = bg_main;
+            theme.list = bg_main;
+            theme.list_head = bg_header;
+            theme.list_even = bg_secondary;
+
+            // Context menu styling: rectangular corners and visible hover
+            theme.radius = px(0.);
+            theme.accent = bg_hover;
+            theme.accent_foreground = rgb(0xe0e0e0).into();
+
+            // Font size for menus to match sidebar text (13px sidebar items, 12px for menus)
+            theme.font_size = px(12.);
+        }
+
         // Load custom fonts
         let assets_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
         let assets = Assets { base: assets_path };
@@ -82,6 +125,9 @@ fn main() {
 
         // Register text input key bindings
         register_text_input_bindings(cx);
+
+        // Register selectable text key bindings
+        register_selectable_text_bindings(cx);
 
         // Register connection modal key bindings (Tab navigation)
         register_connection_modal_bindings(cx);

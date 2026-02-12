@@ -17,6 +17,7 @@ sqlite-driver = []  # SQLite as a target database (rusqlite already included for
 [dependencies]
 # GPUI framework
 gpui = { version = "*" }
+gpui-component = { version = "0.5" }
 
 # Core utilities
 anyhow = "1.0"

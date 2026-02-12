@@ -1,32 +1,60 @@
+//! Table view component using gpui-component's Table.
+//!
+//! This module provides a wrapper around gpui-component's Table that maintains
+//! the same public interface as the original custom implementation.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui::{prelude::*, *};
+use gpui_component::{
+    table::{Column as GpuiColumn, ColumnSort, Table, TableDelegate, TableEvent, TableState},
+    ActiveTheme,
+};
 
-use crate::ui::tooltip::Tooltip;
-
-/// Row height for table rows
-const ROW_HEIGHT: f32 = 28.0;
-
-/// Header height
-const HEADER_HEIGHT: f32 = 32.0;
-
-/// Default column width
-const DEFAULT_COLUMN_WIDTH: f32 = 150.0;
-
-/// Row number column width
-const ROW_NUM_WIDTH: f32 = 50.0;
-
-/// Maximum display length for cell values (truncate long content)
-const MAX_CELL_DISPLAY_LENGTH: usize = 100;
+use crate::ui::selectable_text::SelectableTextArea;
+use crate::ui::theme::AppColors;
 
 /// Items per page
 pub const PAGE_SIZE: usize = 20;
 
-/// Scrollbar thumb minimum height
-const SCROLLBAR_THUMB_MIN_SIZE: f32 = 30.0;
+/// Maximum display length for cell values (truncate long content)
+const MAX_CELL_DISPLAY_LENGTH: usize = 100;
 
-/// Scrollbar track height (for horizontal scrollbar)
-const SCROLLBAR_TRACK_HEIGHT: f32 = 12.0;
+/// Sort direction
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
 
-/// A column definition
+impl From<ColumnSort> for SortDirection {
+    fn from(sort: ColumnSort) -> Self {
+        match sort {
+            ColumnSort::Ascending => SortDirection::Ascending,
+            ColumnSort::Descending | ColumnSort::Default => SortDirection::Descending,
+        }
+    }
+}
+
+impl From<SortDirection> for ColumnSort {
+    fn from(dir: SortDirection) -> Self {
+        match dir {
+            SortDirection::Ascending => ColumnSort::Ascending,
+            SortDirection::Descending => ColumnSort::Descending,
+        }
+    }
+}
+
+/// View mode for the table
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum ViewMode {
+    #[default]
+    Table,
+    Json,
+}
+
+/// A column definition (public interface)
 #[derive(Clone)]
 pub struct Column {
     pub name: SharedString,
@@ -37,7 +65,7 @@ impl Column {
     pub fn new(name: impl Into<SharedString>) -> Self {
         Self {
             name: name.into(),
-            width: DEFAULT_COLUMN_WIDTH,
+            width: 150.0,
         }
     }
 
@@ -58,7 +86,6 @@ pub struct Row {
 
 impl Row {
     pub fn new(values: Vec<SharedString>) -> Self {
-        // Store full values and create truncated display values
         let display_values: Vec<SharedString> = values
             .iter()
             .map(|v| {
@@ -77,22 +104,22 @@ impl Row {
     }
 }
 
+// ── Events ──────────────────────────────────────────────────────────────
+
 /// Event emitted when a row is selected
 #[derive(Clone)]
-#[allow(dead_code)] // Event payload for subscribers
+#[allow(dead_code)]
 pub struct RowSelected(pub usize);
 
-/// Event emitted when a cell is clicked for detail view
+/// Event emitted when a cell is double-clicked (for copy)
 #[derive(Clone)]
-pub struct CellClicked {
-    #[allow(dead_code)] // Field for future use
+pub struct CellDoubleClicked {
+    #[allow(dead_code)]
     pub row_index: usize,
+    #[allow(dead_code)]
     pub col_index: usize,
     pub value: SharedString,
 }
-
-impl EventEmitter<RowSelected> for TableView {}
-impl EventEmitter<CellClicked> for TableView {}
 
 /// Event for page change requests
 #[derive(Clone)]
@@ -100,87 +127,457 @@ pub struct PageChangeRequested {
     pub page: usize,
 }
 
-impl EventEmitter<PageChangeRequested> for TableView {}
+/// Event for sort change requests
+#[derive(Clone)]
+pub struct SortChangeRequested {
+    pub field: String,
+    pub direction: SortDirection,
+}
 
-/// DataGrip-style table view component with pagination and horizontal scrolling
+/// Event for view mode change
+#[derive(Clone)]
+pub struct ViewModeChanged(pub ViewMode);
+
+/// Event: header right-clicked, bubble context menu to parent
+#[derive(Clone)]
+pub struct HeaderContextMenuRequested {
+    pub col_name: String,
+    pub position: Point<Pixels>,
+}
+
+/// Event: view dropdown toggled, bubble to parent
+#[derive(Clone)]
+pub struct ViewDropdownToggled {
+    pub open: bool,
+    pub view_mode: ViewMode,
+}
+
+/// Event: cell right-clicked, bubble context menu to parent
+#[derive(Clone)]
+pub struct CellContextMenuRequested {
+    pub row_index: usize,
+    pub col_index: usize,
+    pub col_name: String,
+    pub value: SharedString,
+    pub position: Point<Pixels>,
+}
+
+// ── Table Delegate ──────────────────────────────────────────────────────
+
+/// Shared state for tracking cell interactions between delegate and TableView
+#[derive(Clone, Default)]
+pub struct CellInteractionState {
+    /// Last clicked cell (row_ix, col_ix)
+    pub last_clicked_cell: Option<(usize, usize)>,
+    /// Currently selected cell for highlighting (row_ix, col_ix)
+    pub selected_cell: Option<(usize, usize)>,
+    /// Pending context menu request (row_ix, col_ix, position)
+    pub pending_context_menu: Option<(usize, usize, Point<Pixels>)>,
+    /// Pending header context menu request (col_ix, position)
+    pub pending_header_context_menu: Option<(usize, Point<Pixels>)>,
+    /// Flag to indicate a right-click just happened (for context menu tracking)
+    pub right_click_pending: bool,
+}
+
+/// Delegate for the gpui-component Table
+pub struct TableViewDelegate {
+    /// Stored columns for the delegate
+    gpui_columns: Vec<GpuiColumn>,
+    /// Our column definitions
+    columns: Vec<Column>,
+    /// Row data
+    rows: Vec<Row>,
+    /// Sort field
+    sort_field: Option<String>,
+    /// Sort direction
+    sort_direction: Option<SortDirection>,
+    /// Shared interaction state
+    interaction_state: Rc<RefCell<CellInteractionState>>,
+}
+
+impl TableViewDelegate {
+    pub fn new(interaction_state: Rc<RefCell<CellInteractionState>>) -> Self {
+        Self {
+            gpui_columns: Vec::new(),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            sort_field: None,
+            sort_direction: None,
+            interaction_state,
+        }
+    }
+
+    /// Update columns and rebuild gpui_columns
+    pub fn set_columns(&mut self, columns: Vec<Column>) {
+        self.columns = columns;
+        self.rebuild_gpui_columns();
+    }
+
+    /// Update sort state and rebuild gpui_columns
+    pub fn set_sort(&mut self, field: Option<String>, direction: Option<SortDirection>) {
+        self.sort_field = field;
+        self.sort_direction = direction;
+        self.rebuild_gpui_columns();
+    }
+
+    fn rebuild_gpui_columns(&mut self) {
+        self.gpui_columns = self
+            .columns
+            .iter()
+            .map(|col| {
+                let is_sorted = self.sort_field.as_deref() == Some(&col.name);
+
+                let mut gpui_col = GpuiColumn::new(col.name.clone(), col.name.clone())
+                    .width(px(col.width))
+                    .sortable();
+
+                if is_sorted {
+                    gpui_col = match self.sort_direction {
+                        Some(SortDirection::Ascending) => gpui_col.ascending(),
+                        Some(SortDirection::Descending) => gpui_col.descending(),
+                        None => gpui_col,
+                    };
+                }
+
+                gpui_col
+            })
+            .collect();
+    }
+}
+
+impl TableDelegate for TableViewDelegate {
+    fn columns_count(&self, _cx: &App) -> usize {
+        self.gpui_columns.len()
+    }
+
+    fn rows_count(&self, _cx: &App) -> usize {
+        self.rows.len()
+    }
+
+    fn column(&self, col_ix: usize, _cx: &App) -> &GpuiColumn {
+        &self.gpui_columns[col_ix]
+    }
+
+    fn perform_sort(
+        &mut self,
+        _col_ix: usize,
+        _sort: ColumnSort,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        // Sort is handled externally via events
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let value = self
+            .rows
+            .get(row_ix)
+            .and_then(|r| r.values.get(col_ix))
+            .cloned()
+            .unwrap_or_else(|| SharedString::from(""));
+
+        let is_truncated = self
+            .rows
+            .get(row_ix)
+            .and_then(|r| r.full_values.get(col_ix))
+            .map(|v| v.len() > MAX_CELL_DISPLAY_LENGTH)
+            .unwrap_or(false);
+
+        let text_color = if is_truncated {
+            AppColors::truncated_text()
+        } else {
+            cx.theme().foreground
+        };
+
+        // Check if this cell is selected
+        let is_selected = self
+            .interaction_state
+            .borrow()
+            .selected_cell
+            .map(|(r, c)| r == row_ix && c == col_ix)
+            .unwrap_or(false);
+
+        let interaction_state = self.interaction_state.clone();
+        let interaction_state_for_right_click = self.interaction_state.clone();
+
+        div()
+            .id(SharedString::from(format!("cell-{}-{}", row_ix, col_ix)))
+            .size_full()
+            .overflow_hidden()
+            .text_ellipsis()
+            .whitespace_nowrap()
+            .text_color(text_color)
+            .text_size(px(12.0))
+            // Cell selection highlight
+            .when(is_selected, |this| {
+                this.bg(AppColors::bg_cell_selected())
+                    .border_1()
+                    .border_color(AppColors::border_active())
+            })
+            // Track which cell was clicked (for CellClicked event) and select it
+            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                let mut state = interaction_state.borrow_mut();
+                state.last_clicked_cell = Some((row_ix, col_ix));
+                state.selected_cell = Some((row_ix, col_ix));
+            })
+            // Right-click for context menu - capture window position using canvas bounds
+            .on_mouse_down(MouseButton::Right, move |_event, window, _| {
+                // event.position is relative to the element, we need window coordinates
+                // The mouse position in the event is already in window coordinates for mouse events
+                let window_position = window.mouse_position();
+                let mut state = interaction_state_for_right_click.borrow_mut();
+                state.pending_context_menu = Some((row_ix, col_ix, window_position));
+                state.right_click_pending = true;
+            })
+            .child(value)
+    }
+
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let col_name = self
+            .columns
+            .get(col_ix)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| SharedString::from(""));
+
+        let interaction_state = self.interaction_state.clone();
+
+        div()
+            .id(("header", col_ix))
+            .size_full()
+            .flex()
+            .items_center()
+            // Match toolbar text size (px(12.0))
+            .text_size(px(12.0))
+            .text_color(cx.theme().muted_foreground)
+            // Right-click for header context menu (sort options)
+            .on_mouse_down(MouseButton::Right, move |_, window, _| {
+                // Use window mouse position for accurate coordinates
+                let window_position = window.mouse_position();
+                interaction_state.borrow_mut().pending_header_context_menu =
+                    Some((col_ix, window_position));
+            })
+            .child(col_name)
+    }
+
+    fn render_empty(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(cx.theme().muted_foreground)
+            .child("No data")
+    }
+}
+
+// ── TableView ───────────────────────────────────────────────────────────
+
+/// TableView wraps gpui-component's Table with the same public interface
 pub struct TableView {
+    table_state: Option<Entity<TableState<TableViewDelegate>>>,
     columns: Vec<Column>,
     rows: Vec<Row>,
-    selected_row: Option<usize>,
-    /// Vertical scroll handle
-    vertical_scroll: ScrollHandle,
-    /// Horizontal scroll offset (positive = scrolled right)
-    horizontal_scroll_offset: Pixels,
-    /// Captured viewport width from layout
-    viewport_width: Pixels,
-    /// Whether scrollbar thumb is being dragged
-    is_dragging_scrollbar: bool,
-    /// Drag start position (click_x, initial_scroll_offset)
-    drag_start: Option<(Pixels, Pixels)>,
-    /// Current page (0-indexed)
     current_page: usize,
-    /// Total number of items (may be more than rows.len() if paginated at source)
     total_items: usize,
+    sort_field: Option<String>,
+    sort_direction: Option<SortDirection>,
+    filter_query: String,
+    view_mode: ViewMode,
+    raw_json: Option<String>,
+    json_text_area: Option<Entity<SelectableTextArea>>,
+    /// Shared interaction state for tracking cell clicks
+    interaction_state: Rc<RefCell<CellInteractionState>>,
 }
+
+impl EventEmitter<RowSelected> for TableView {}
+impl EventEmitter<CellDoubleClicked> for TableView {}
+impl EventEmitter<PageChangeRequested> for TableView {}
+impl EventEmitter<SortChangeRequested> for TableView {}
+impl EventEmitter<ViewModeChanged> for TableView {}
+impl EventEmitter<HeaderContextMenuRequested> for TableView {}
+impl EventEmitter<ViewDropdownToggled> for TableView {}
+impl EventEmitter<CellContextMenuRequested> for TableView {}
 
 impl TableView {
     pub fn new() -> Self {
         Self {
+            table_state: None,
             columns: Vec::new(),
             rows: Vec::new(),
-            selected_row: None,
-            vertical_scroll: ScrollHandle::new(),
-            horizontal_scroll_offset: px(0.0),
-            viewport_width: px(0.0),
-            is_dragging_scrollbar: false,
-            drag_start: None,
             current_page: 0,
             total_items: 0,
+            sort_field: None,
+            sort_direction: None,
+            filter_query: String::new(),
+            view_mode: ViewMode::Table,
+            raw_json: None,
+            json_text_area: None,
+            interaction_state: Rc::new(RefCell::new(CellInteractionState::default())),
         }
     }
 
-    /// Set the columns for this table
+    fn ensure_table_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.table_state.is_some() {
+            return;
+        }
+
+        // Create delegate with shared interaction state
+        let mut delegate = TableViewDelegate::new(self.interaction_state.clone());
+        delegate.set_columns(self.columns.clone());
+        delegate.rows = self.rows.clone();
+        delegate.set_sort(self.sort_field.clone(), self.sort_direction);
+
+        let table_state = cx.new(|cx| {
+            TableState::new(delegate, window, cx)
+                .sortable(true)
+                .col_resizable(true)
+                .row_selectable(true)
+        });
+
+        // Subscribe to table events
+        let interaction_state = self.interaction_state.clone();
+        cx.subscribe(&table_state, move |this, _table, event: &TableEvent, cx| {
+            match event {
+                TableEvent::SelectRow(row_ix) => {
+                    // Reset right-click flag (used for context menu tracking)
+                    interaction_state.borrow_mut().right_click_pending = false;
+
+                    let global_idx = this.current_page * PAGE_SIZE + *row_ix;
+                    cx.emit(RowSelected(global_idx));
+                    // NOTE: CellClicked is no longer emitted - panel opens only from context menu
+                }
+                TableEvent::DoubleClickedRow(row_ix) => {
+                    let global_idx = this.current_page * PAGE_SIZE + *row_ix;
+
+                    // Get the clicked column from interaction state, default to 0
+                    let col_ix = interaction_state
+                        .borrow()
+                        .last_clicked_cell
+                        .filter(|(r, _)| *r == *row_ix)
+                        .map(|(_, c)| c)
+                        .unwrap_or(0);
+
+                    if let Some(row) = this.rows.get(*row_ix) {
+                        if let Some(value) = row.full_values.get(col_ix) {
+                            cx.emit(CellDoubleClicked {
+                                row_index: global_idx,
+                                col_index: col_ix,
+                                value: value.clone(),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        })
+        .detach();
+
+        self.table_state = Some(table_state);
+    }
+
+    fn update_delegate(&mut self, cx: &mut Context<Self>) {
+        if let Some(table_state) = &self.table_state {
+            let columns = self.columns.clone();
+            let rows = self.rows.clone();
+            let sort_field = self.sort_field.clone();
+            let sort_direction = self.sort_direction;
+
+            table_state.update(cx, |state, cx| {
+                let delegate = state.delegate_mut();
+                delegate.set_columns(columns);
+                delegate.rows = rows;
+                delegate.set_sort(sort_field, sort_direction);
+                state.refresh(cx);
+            });
+        }
+    }
+
     pub fn set_columns(&mut self, columns: Vec<Column>, cx: &mut Context<Self>) {
         self.columns = columns;
-        // Reset horizontal scroll when columns change
-        self.horizontal_scroll_offset = px(0.0);
+        self.update_delegate(cx);
         cx.notify();
     }
 
-    /// Set the data rows (doesn't reset pagination - use set_rows_with_pagination for that)
     pub fn set_rows(&mut self, rows: Vec<Row>, cx: &mut Context<Self>) {
         self.rows = rows;
-        self.selected_row = None;
+        self.update_delegate(cx);
         cx.notify();
     }
 
-    /// Set total items count (for server-side pagination)
     pub fn set_total_items(&mut self, total: usize, cx: &mut Context<Self>) {
         self.total_items = total;
         cx.notify();
     }
 
-    /// Set current page
     pub fn set_page(&mut self, page: usize, cx: &mut Context<Self>) {
         self.current_page = page;
         cx.notify();
     }
 
-    /// Reset pagination (call when loading fresh data)
-    #[allow(dead_code)] // API method for fresh data loads
+    pub fn set_raw_json(&mut self, json: String, cx: &mut Context<Self>) {
+        let content = json.clone();
+        if let Some(text_area) = &self.json_text_area {
+            text_area.update(cx, |ta, cx| {
+                ta.set_content(content, cx);
+            });
+        } else {
+            self.json_text_area = Some(cx.new(|cx| SelectableTextArea::new(cx, content)));
+        }
+        self.raw_json = Some(json);
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
+    pub fn set_filter_query(&mut self, query: String, cx: &mut Context<Self>) {
+        self.filter_query = query;
+        cx.notify();
+    }
+
+    pub fn set_sort(
+        &mut self,
+        field: Option<String>,
+        direction: Option<SortDirection>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sort_field = field;
+        self.sort_direction = direction;
+        self.update_delegate(cx);
+        cx.notify();
+    }
+
+    pub fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
+        self.view_mode = mode;
+        cx.emit(ViewModeChanged(mode));
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
     pub fn reset_pagination(&mut self, cx: &mut Context<Self>) {
         self.current_page = 0;
         self.total_items = self.rows.len();
         cx.notify();
     }
 
-    /// Get current page
-    #[allow(dead_code)] // API method for external access
+    #[allow(dead_code)]
     pub fn current_page(&self) -> usize {
         self.current_page
     }
 
-    /// Get total pages
     pub fn total_pages(&self) -> usize {
         if self.total_items == 0 {
             1
@@ -189,22 +586,27 @@ impl TableView {
         }
     }
 
-    /// Select a row by index
+    #[allow(dead_code)]
     pub fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.rows.len() {
-            self.selected_row = Some(index);
+            if let Some(table_state) = &self.table_state {
+                table_state.update(cx, |state, cx| {
+                    state.set_selected_row(index, cx);
+                });
+            }
             cx.emit(RowSelected(index));
             cx.notify();
         }
     }
 
-    /// Get selected row index
-    #[allow(dead_code)] // API method for external access
+    #[allow(dead_code)]
     pub fn selected_row(&self) -> Option<usize> {
-        self.selected_row
+        self.table_state.as_ref().and_then(|_ts| {
+            // We can't easily read the state here without cx, so return None
+            None
+        })
     }
 
-    /// Go to next page
     fn next_page(&mut self, cx: &mut Context<Self>) {
         if self.current_page < self.total_pages() - 1 {
             self.current_page += 1;
@@ -215,7 +617,6 @@ impl TableView {
         }
     }
 
-    /// Go to previous page
     fn prev_page(&mut self, cx: &mut Context<Self>) {
         if self.current_page > 0 {
             self.current_page -= 1;
@@ -226,100 +627,227 @@ impl TableView {
         }
     }
 
-    /// Calculate total content width
-    fn total_width(&self) -> f32 {
-        ROW_NUM_WIDTH + self.columns.iter().map(|c| c.width).sum::<f32>()
+    /// Process pending cell/header interactions and emit appropriate events
+    fn process_pending_interactions(&mut self, cx: &mut Context<Self>) {
+        // Check for pending cell context menu
+        if let Some((row_ix, col_ix, position)) = self
+            .interaction_state
+            .borrow_mut()
+            .pending_context_menu
+            .take()
+        {
+            let global_idx = self.current_page * PAGE_SIZE + row_ix;
+            let col_name = self
+                .columns
+                .get(col_ix)
+                .map(|c| c.name.to_string())
+                .unwrap_or_default();
+            let value = self
+                .rows
+                .get(row_ix)
+                .and_then(|r| r.full_values.get(col_ix))
+                .cloned()
+                .unwrap_or_else(|| SharedString::from(""));
+
+            cx.emit(CellContextMenuRequested {
+                row_index: global_idx,
+                col_index: col_ix,
+                col_name,
+                value,
+                position,
+            });
+        }
+
+        // Check for pending header context menu
+        if let Some((col_ix, position)) = self
+            .interaction_state
+            .borrow_mut()
+            .pending_header_context_menu
+            .take()
+        {
+            let col_name = self
+                .columns
+                .get(col_ix)
+                .map(|c| c.name.to_string())
+                .unwrap_or_default();
+
+            cx.emit(HeaderContextMenuRequested { col_name, position });
+        }
     }
 
-    /// Get max horizontal scroll based on viewport
-    fn max_horizontal_scroll(&self) -> Pixels {
-        let viewport_width: f32 = self.viewport_width.into();
-        let content_width = self.total_width();
-        px((content_width - viewport_width).max(0.0))
-    }
+    // ── Toolbar ─────────────────────────────────────────────────────────
 
-    /// Clamp horizontal scroll to valid range
-    fn clamp_scroll(&mut self) {
-        let max_scroll = self.max_horizontal_scroll();
-        self.horizontal_scroll_offset = self
-            .horizontal_scroll_offset
-            .clamp(px(0.0), max_scroll.max(px(0.0)));
-    }
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let filter_display = if self.filter_query.is_empty() {
+            "{}".to_string()
+        } else {
+            self.filter_query.clone()
+        };
 
-    /// Handle horizontal scroll wheel
-    fn handle_scroll_wheel(&mut self, delta_x: Pixels, cx: &mut Context<Self>) {
-        self.horizontal_scroll_offset = self.horizontal_scroll_offset - delta_x;
-        self.clamp_scroll();
-        cx.notify();
-    }
+        let sort_display = match (&self.sort_field, &self.sort_direction) {
+            (Some(field), Some(SortDirection::Ascending)) => format!("{{\"{}\": 1}}", field),
+            (Some(field), Some(SortDirection::Descending)) => format!("{{\"{}\": -1}}", field),
+            _ => "{}".to_string(),
+        };
 
-    /// Render the header row with horizontal offset applied
-    fn render_header(&self, offset: Pixels) -> impl IntoElement {
-        let header_bg = rgb(0x252525);
-        let text_color = rgb(0xb0b0b0);
-        let border_color = rgb(0x3a3a3a);
-        let total_width = self.total_width();
+        let current_view = self.view_mode;
 
         div()
-            .id("table-header")
+            .id("table-toolbar")
             .flex()
             .flex_row()
-            .w(px(total_width))
-            .h(px(HEADER_HEIGHT))
-            .bg(header_bg)
+            .items_center()
+            .justify_between()
+            .w_full()
+            .h(px(36.0))
+            .px(px(12.0))
+            .bg(AppColors::bg_header())
             .border_b_1()
-            .border_color(border_color)
-            .ml(px(-f32::from(offset))) // Apply horizontal offset
-            // Row number column header
+            .border_color(AppColors::border())
+            // Left side: Filter and Sort
             .child(
                 div()
                     .flex()
-                    .flex_shrink_0()
+                    .flex_row()
                     .items_center()
-                    .justify_center()
-                    .w(px(ROW_NUM_WIDTH))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(border_color)
+                    .gap(px(20.0))
+                    // Filter
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(rgb(0x606060))
-                            .child("#"),
+                            .id("filter-display")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(AppColors::bg_hover()))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(AppColors::text_dim())
+                                    .child("Filter:"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_family("monospace")
+                                    .text_color(AppColors::text_secondary())
+                                    .child(filter_display),
+                            ),
+                    )
+                    // Sort with clear button
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .id("sort-display")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .rounded(px(4.0))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(AppColors::bg_hover()))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(AppColors::text_dim())
+                                            .child("Sort:"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .font_family("monospace")
+                                            .text_color(if self.sort_field.is_some() {
+                                                AppColors::accent()
+                                            } else {
+                                                AppColors::text_secondary()
+                                            })
+                                            .child(sort_display),
+                                    ),
+                            )
+                            .when(self.sort_field.is_some(), |el| {
+                                el.child(
+                                    div()
+                                        .id("clear-sort")
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(18.0))
+                                        .rounded(px(3.0))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(AppColors::bg_hover()))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.sort_field = None;
+                                            this.sort_direction = None;
+                                            cx.emit(SortChangeRequested {
+                                                field: String::new(),
+                                                direction: SortDirection::Ascending,
+                                            });
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            svg()
+                                                .path("icons/close.svg")
+                                                .size(px(10.0))
+                                                .text_color(AppColors::text_dim()),
+                                        ),
+                                )
+                            }),
                     ),
             )
-            // Column headers
-            .children(self.columns.iter().enumerate().map(|(idx, col)| {
+            // Right side: View dropdown trigger
+            .child(
                 div()
-                    .id(SharedString::from(format!("header-{}", idx)))
+                    .id("view-dropdown-trigger")
                     .flex()
-                    .flex_shrink_0()
+                    .flex_row()
                     .items_center()
-                    .px(px(8.0))
-                    .w(px(col.width))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(border_color)
-                    .overflow_hidden()
+                    .gap(px(4.0))
+                    .px(px(10.0))
+                    .py(px(5.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .bg(AppColors::bg_active())
+                    .border_1()
+                    .border_color(AppColors::border())
+                    .hover(|s| s.bg(AppColors::bg_hover()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.emit(ViewDropdownToggled {
+                            open: true,
+                            view_mode: this.view_mode,
+                        });
+                    }))
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(text_color)
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(col.name.clone()),
+                            .text_size(px(12.0))
+                            .text_color(AppColors::text_secondary())
+                            .child(match current_view {
+                                ViewMode::Table => "Table",
+                                ViewMode::Json => "JSON",
+                            }),
                     )
-            }))
+                    .child(
+                        svg()
+                            .path("icons/chevron-down.svg")
+                            .size(px(12.0))
+                            .text_color(AppColors::text_dim()),
+                    ),
+            )
     }
 
-    /// Render pagination controls (fixed at bottom)
-    fn render_pagination(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let bg_color = rgba(0x1e1e1eff);
-        let text_color = rgb(0xb0b0b0);
-        let text_muted = rgb(0x606060);
-        let accent_color = rgb(0x0078d4);
+    // ── Pagination ──────────────────────────────────────────────────────
 
+    fn render_pagination(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current_page = self.current_page;
         let total_pages = self.total_pages();
         let total_items = self.total_items;
@@ -342,9 +870,9 @@ impl TableView {
             .items_center()
             .justify_center()
             .py(px(8.0))
-            .bg(rgb(0x1e1e1e))
+            .bg(AppColors::bg_secondary())
             .border_t_1()
-            .border_color(rgb(0x3a3a3a))
+            .border_color(AppColors::border())
             .child(
                 div()
                     .flex()
@@ -354,11 +882,10 @@ impl TableView {
                     .px(px(12.0))
                     .py(px(6.0))
                     .rounded(px(6.0))
-                    .bg(bg_color)
+                    .bg(AppColors::bg_secondary())
                     .border_1()
-                    .border_color(rgb(0x3a3a3a))
+                    .border_color(AppColors::border())
                     .shadow_sm()
-                    // Previous button
                     .child(
                         div()
                             .id("prev-page")
@@ -374,20 +901,22 @@ impl TableView {
                                 CursorStyle::default()
                             })
                             .when(can_prev, |el| {
-                                el.hover(|s| s.bg(rgb(0x3a3a3a))).on_click(cx.listener(
-                                    |this, _, _, cx| {
+                                el.hover(|s| s.bg(AppColors::bg_hover()))
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         this.prev_page(cx);
-                                    },
-                                ))
+                                    }))
                             })
                             .child(
                                 svg()
                                     .path("icons/chevron-left.svg")
                                     .size(px(14.0))
-                                    .text_color(if can_prev { text_color } else { text_muted }),
+                                    .text_color(if can_prev {
+                                        AppColors::text_secondary()
+                                    } else {
+                                        AppColors::text_dim()
+                                    }),
                             ),
                     )
-                    // Page info
                     .child(
                         div()
                             .flex()
@@ -397,18 +926,22 @@ impl TableView {
                             .child(
                                 div()
                                     .text_size(px(12.0))
-                                    .text_color(text_color)
+                                    .text_color(AppColors::text_secondary())
                                     .child(format!("{} - {}", start_item, end_item)),
                             )
-                            .child(div().text_size(px(11.0)).text_color(text_muted).child("of"))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(AppColors::text_dim())
+                                    .child("of"),
+                            )
                             .child(
                                 div()
                                     .text_size(px(12.0))
-                                    .text_color(accent_color)
+                                    .text_color(AppColors::accent())
                                     .child(format!("{}", total_items)),
                             ),
                     )
-                    // Next button
                     .child(
                         div()
                             .id("next-page")
@@ -424,157 +957,39 @@ impl TableView {
                                 CursorStyle::default()
                             })
                             .when(can_next, |el| {
-                                el.hover(|s| s.bg(rgb(0x3a3a3a))).on_click(cx.listener(
-                                    |this, _, _, cx| {
+                                el.hover(|s| s.bg(AppColors::bg_hover()))
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         this.next_page(cx);
-                                    },
-                                ))
+                                    }))
                             })
                             .child(
                                 svg()
                                     .path("icons/chevron-right.svg")
                                     .size(px(14.0))
-                                    .text_color(if can_next { text_color } else { text_muted }),
+                                    .text_color(if can_next {
+                                        AppColors::text_secondary()
+                                    } else {
+                                        AppColors::text_dim()
+                                    }),
                             ),
                     ),
             )
     }
 
-    /// Render a single row with horizontal offset applied
-    fn render_row(
-        &self,
-        global_row_idx: usize,
-        row: &Row,
-        offset: Pixels,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let row_even_bg = rgb(0x1e1e1e);
-        let row_odd_bg = rgb(0x1a1a1a);
-        let row_selected_bg = rgba(0x0078d430);
-        let row_hover_bg = rgb(0x252525);
-        let text_color = rgb(0xe0e0e0);
-        let text_muted = rgb(0x808080);
-        let border_color = rgb(0x3a3a3a);
-        let accent_color = rgb(0x0078d4);
+    // ── JSON view ───────────────────────────────────────────────────────
 
-        let is_selected = self.selected_row == Some(global_row_idx);
-        let is_even = global_row_idx % 2 == 0;
-        let total_width = self.total_width();
-        let columns = self.columns.clone();
-
-        let row_bg = if is_selected {
-            row_selected_bg
-        } else if is_even {
-            row_even_bg
-        } else {
-            row_odd_bg
-        };
-
+    fn render_json_view(&self) -> impl IntoElement {
         div()
-            .id(SharedString::from(format!("row-{}", global_row_idx)))
-            .flex()
-            .flex_row()
-            .w(px(total_width))
-            .h(px(ROW_HEIGHT))
-            .bg(row_bg)
-            .border_b_1()
-            .border_color(border_color)
-            .cursor_pointer()
-            .hover(|s| s.bg(row_hover_bg))
-            .ml(px(-f32::from(offset))) // Apply horizontal offset
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.select_row(global_row_idx, cx);
-            }))
-            // Selection indicator
-            .when(is_selected, |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .bottom_0()
-                        .w(px(3.0))
-                        .bg(accent_color),
-                )
+            .id("json-view")
+            .flex_1()
+            .min_h_0()
+            .bg(AppColors::bg_main())
+            .p(px(16.0))
+            .overflow_y_scroll()
+            .overflow_x_scroll()
+            .when_some(self.json_text_area.clone(), |el, text_area| {
+                el.child(text_area)
             })
-            // Row number
-            .child(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_center()
-                    .w(px(ROW_NUM_WIDTH))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(border_color)
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(text_muted)
-                            .child(format!("{}", global_row_idx + 1)),
-                    ),
-            )
-            // Cell values
-            .children(columns.iter().enumerate().map(|(col_idx, col)| {
-                let value = row
-                    .values
-                    .get(col_idx)
-                    .cloned()
-                    .unwrap_or_else(|| SharedString::from(""));
-
-                let full_value = row
-                    .full_values
-                    .get(col_idx)
-                    .cloned()
-                    .unwrap_or_else(|| SharedString::from(""));
-
-                let is_truncated = full_value.len() > MAX_CELL_DISPLAY_LENGTH;
-
-                let cell_row_idx = global_row_idx;
-                let cell_col_idx = col_idx;
-                let cell_value = full_value.clone();
-
-                div()
-                    .id(SharedString::from(format!(
-                        "cell-{}-{}",
-                        global_row_idx, col_idx
-                    )))
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .px(px(8.0))
-                    .w(px(col.width))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(border_color)
-                    .overflow_hidden()
-                    // Make all cells clickable for detail view
-                    .cursor_pointer()
-                    .when(is_truncated, |el| {
-                        el.tooltip(Tooltip::text("Click to view full content"))
-                    })
-                    .on_click(cx.listener(move |_this, _, _, cx| {
-                        cx.emit(CellClicked {
-                            row_index: cell_row_idx,
-                            col_index: cell_col_idx,
-                            value: cell_value.clone(),
-                        });
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(if is_truncated {
-                                rgb(0x6eb5ff)
-                            } else {
-                                text_color
-                            })
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(value),
-                    )
-            }))
     }
 }
 
@@ -585,305 +1000,45 @@ impl Default for TableView {
 }
 
 impl Render for TableView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let bg_color = rgb(0x1a1a1a);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view_mode = self.view_mode;
 
-        // Capture scroll offset for rendering
-        let scroll_offset = self.horizontal_scroll_offset;
+        // Ensure table state is created
+        self.ensure_table_state(window, cx);
 
-        // Build rows data
-        let page_rows: Vec<(usize, Row)> = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let global_idx = self.current_page * PAGE_SIZE + i;
-                (global_idx, r.clone())
-            })
-            .collect();
-
-        let entity = cx.entity().clone();
+        // Check for pending context menu requests and emit events
+        self.process_pending_interactions(cx);
 
         div()
             .id("table-view")
             .size_full()
-            .bg(bg_color)
+            .bg(AppColors::bg_main())
             .flex()
             .flex_col()
             .overflow_hidden()
-            .relative() // For absolute positioning of canvas
-            // Canvas to measure actual table-view bounds (before content expands it)
-            .child({
-                let entity_for_canvas = entity.clone();
-                canvas(
-                    move |bounds, _, cx| {
-                        // Capture viewport bounds in prepaint and update state
-                        let new_width = bounds.size.width;
-                        entity_for_canvas.update(cx, |this, cx| {
-                            if (f32::from(this.viewport_width) - f32::from(new_width)).abs() > 1.0 {
-                                this.viewport_width = new_width;
-                                this.clamp_scroll();
-                                cx.notify();
-                            }
-                        });
-                    },
-                    |_bounds, _, _window, _cx| {},
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .bottom_0()
-            })
-            // Main table area with scroll wheel handling
-            .child(
-                div()
-                    .id("table-scroll-container")
-                    .flex_1()
-                    .w_full()
-                    .min_h_0()
-                    .min_w_0() // Allow shrinking below content
-                    .overflow_hidden()
-                    .relative() // For absolute content positioning
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                        let delta = event.delta.pixel_delta(px(20.0));
-                        // Handle horizontal scroll (shift+scroll or horizontal scroll)
-                        if delta.x.abs() > px(0.5) {
-                            this.handle_scroll_wheel(delta.x, cx);
-                        }
-                    }))
-                    // Clipped content area - use absolute positioning to prevent layout expansion
-                    .child(
+            // Toolbar
+            .child(self.render_toolbar(cx))
+            // Table view
+            .when(view_mode == ViewMode::Table, |el| {
+                if let Some(table_state) = &self.table_state {
+                    el.child(
                         div()
-                            .id("table-content-clip")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
+                            .id("table-container")
+                            .flex_1()
+                            .min_h_0()
                             .overflow_hidden()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.vertical_scroll)
-                            .child(
-                                div()
-                                    .id("table-content")
-                                    .flex()
-                                    .flex_col()
-                                    // Header
-                                    .child(self.render_header(scroll_offset))
-                                    // Rows
-                                    .children(page_rows.iter().map(|(idx, row)| {
-                                        self.render_row(*idx, row, scroll_offset, cx)
-                                    })),
-                            ),
-                    ),
-            )
-            // Horizontal scrollbar - canvas-based for proper bounds tracking
-            .child({
-                let entity_for_scrollbar = entity.clone();
-                div()
-                    .id("horizontal-scrollbar-container")
-                    .w_full()
-                    .h(px(SCROLLBAR_TRACK_HEIGHT))
-                    .bg(rgb(0x1e1e1e))
-                    .border_t_1()
-                    .border_color(rgb(0x3a3a3a))
-                    .px(px(2.0))
-                    .py(px(2.0))
-                    .child(
-                        // Track div with canvas for mouse events and thumb painting
-                        div()
-                            .id("scrollbar-track")
-                            .relative()
-                            .w_full()
-                            .h(px(SCROLLBAR_TRACK_HEIGHT - 4.0))
-                            .rounded(px(4.0))
-                            .bg(rgb(0x2a2a2a))
-                            .cursor(CursorStyle::PointingHand)
-                            // Canvas to capture track bounds, handle mouse events, and paint thumb
-                            .child(
-                                canvas(|_, _, _| {}, {
-                                    let entity = entity_for_scrollbar.clone();
-                                    move |track_bounds, _, window, cx| {
-                                        let track_width: f32 = track_bounds.size.width.into();
-                                        let track_origin_x = track_bounds.origin.x;
-
-                                        // Read state to compute thumb bounds
-                                        let state = entity.read(cx);
-                                        let vp_width: f32 = state.viewport_width.into();
-                                        let content_w = state.total_width();
-                                        let max_scroll: f32 = state.max_horizontal_scroll().into();
-                                        let scroll_offset: f32 =
-                                            state.horizontal_scroll_offset.into();
-
-                                        let needs_scrollbar =
-                                            content_w > vp_width && vp_width > 0.0;
-
-                                        // Calculate thumb geometry
-                                        let (thumb_width, thumb_left) = if needs_scrollbar {
-                                            let ratio = (vp_width / content_w).clamp(0.0, 1.0);
-                                            let tw =
-                                                (track_width * ratio).max(SCROLLBAR_THUMB_MIN_SIZE);
-                                            let available = (track_width - tw).max(1.0);
-                                            let scroll_ratio = if max_scroll > 0.0 {
-                                                (scroll_offset / max_scroll).clamp(0.0, 1.0)
-                                            } else {
-                                                0.0
-                                            };
-                                            (tw, scroll_ratio * available)
-                                        } else {
-                                            (0.0, 0.0)
-                                        };
-
-                                        let thumb_bounds = Bounds {
-                                            origin: point(
-                                                track_origin_x + px(thumb_left),
-                                                track_bounds.origin.y,
-                                            ),
-                                            size: size(px(thumb_width), track_bounds.size.height),
-                                        };
-
-                                        // Paint thumb
-                                        if needs_scrollbar {
-                                            let color = if state.is_dragging_scrollbar {
-                                                rgb(0x808080)
-                                            } else {
-                                                rgb(0x606060)
-                                            };
-
-                                            window.paint_quad(PaintQuad {
-                                                bounds: thumb_bounds.clone(),
-                                                corner_radii: Corners::all(px(4.0)),
-                                                background: color.into(),
-                                                border_widths: Edges::default(),
-                                                border_color: Hsla::transparent_black(),
-                                                border_style: BorderStyle::default(),
-                                            });
-                                        }
-
-                                        // Mouse down - start drag on thumb, or jump on track
-                                        window.on_mouse_event({
-                                            let entity = entity.clone();
-                                            let track_bounds = track_bounds.clone();
-                                            let thumb_bounds = thumb_bounds.clone();
-                                            move |ev: &MouseDownEvent, _, _, cx| {
-                                                if !track_bounds.contains(&ev.position) {
-                                                    return;
-                                                }
-
-                                                if thumb_bounds.contains(&ev.position) {
-                                                    // Click on thumb - start drag
-                                                    entity.update(cx, |this, cx| {
-                                                        this.is_dragging_scrollbar = true;
-                                                        // Store offset within thumb from its left edge
-                                                        this.drag_start = Some((
-                                                            ev.position.x - thumb_bounds.origin.x,
-                                                            track_origin_x,
-                                                        ));
-                                                        cx.notify();
-                                                    });
-                                                } else {
-                                                    // Click on track - jump to position (center thumb on click)
-                                                    entity.update(cx, |this, cx| {
-                                                        let click_relative = f32::from(
-                                                            ev.position.x - track_origin_x,
-                                                        );
-                                                        let track_w: f32 =
-                                                            track_bounds.size.width.into();
-                                                        let thumb_w = thumb_width;
-                                                        let available =
-                                                            (track_w - thumb_w).max(1.0);
-
-                                                        // Center thumb on click position
-                                                        let thumb_left_target = (click_relative
-                                                            - thumb_w / 2.0)
-                                                            .clamp(0.0, available);
-                                                        let scroll_ratio =
-                                                            thumb_left_target / available;
-
-                                                        this.horizontal_scroll_offset =
-                                                            px(scroll_ratio * max_scroll);
-                                                        this.clamp_scroll();
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            }
-                                        });
-
-                                        // Mouse up - end drag
-                                        window.on_mouse_event({
-                                            let entity = entity.clone();
-                                            move |_: &MouseUpEvent, _, _, cx| {
-                                                entity.update(cx, |this, cx| {
-                                                    if this.is_dragging_scrollbar {
-                                                        this.is_dragging_scrollbar = false;
-                                                        this.drag_start = None;
-                                                        cx.notify();
-                                                    }
-                                                });
-                                            }
-                                        });
-
-                                        // Mouse move - handle drag
-                                        window.on_mouse_event({
-                                            let entity = entity.clone();
-                                            let track_bounds = track_bounds.clone();
-                                            move |ev: &MouseMoveEvent, _, _, cx| {
-                                                let state = entity.read(cx);
-                                                if !state.is_dragging_scrollbar || !ev.dragging() {
-                                                    return;
-                                                }
-
-                                                let Some((thumb_click_offset, track_origin)) =
-                                                    state.drag_start
-                                                else {
-                                                    return;
-                                                };
-
-                                                entity.update(cx, |this, cx| {
-                                                    let vp_w: f32 = this.viewport_width.into();
-                                                    let content_w = this.total_width();
-                                                    let max_s: f32 =
-                                                        this.max_horizontal_scroll().into();
-                                                    let track_w: f32 =
-                                                        track_bounds.size.width.into();
-
-                                                    if track_w > 0.0 && max_s > 0.0 {
-                                                        // Calculate thumb width
-                                                        let ratio =
-                                                            (vp_w / content_w).clamp(0.0, 1.0);
-                                                        let thumb_w = (track_w * ratio)
-                                                            .max(SCROLLBAR_THUMB_MIN_SIZE);
-                                                        let available =
-                                                            (track_w - thumb_w).max(1.0);
-
-                                                        // Where should thumb left edge be?
-                                                        // Mouse position - track origin - offset within thumb
-                                                        let thumb_left = f32::from(
-                                                            ev.position.x
-                                                                - track_origin
-                                                                - thumb_click_offset,
-                                                        );
-                                                        let thumb_left_clamped =
-                                                            thumb_left.clamp(0.0, available);
-
-                                                        let scroll_ratio =
-                                                            thumb_left_clamped / available;
-                                                        this.horizontal_scroll_offset =
-                                                            px(scroll_ratio * max_s);
-                                                        this.clamp_scroll();
-                                                        cx.notify();
-                                                    }
-                                                });
-                                            }
-                                        });
-                                    }
-                                })
-                                .size_full(),
-                            ),
+                            .bg(AppColors::bg_main())
+                            .child(Table::new(table_state).stripe(true).bordered(true)),
                     )
+                } else {
+                    el
+                }
             })
-            // Pagination
+            // JSON view
+            .when(view_mode == ViewMode::Json, |el| {
+                el.child(self.render_json_view())
+            })
+            // Pagination (always shown)
             .child(self.render_pagination(cx))
     }
 }

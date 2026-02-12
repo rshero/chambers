@@ -1,13 +1,11 @@
 use gpui::{prelude::*, *};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use std::sync::Arc;
 
-use crate::db::{Connection, ConnectionStorage, DatabaseType};
+use crate::db::{create_connection, Connection, ConnectionConfig, ConnectionStorage, DatabaseType};
 use crate::ui::connection_browser::{
     CollectionContextMenuRequested, CollectionSelected, ConnectionBrowser,
     DatabaseContextMenuRequested, LoadingState,
-};
-use crate::ui::context_menu::{
-    ContextMenu, ContextMenuAction, ContextMenuEvent, ContextMenuItem, ContextMenuItemStyle,
 };
 use crate::ui::database_menu::{DatabaseMenu, DatabaseSelected};
 use crate::ui::database_picker::{DatabasePicker, DatabaseVisibilityChanged};
@@ -91,8 +89,12 @@ pub struct Sidebar {
     is_refreshing: bool,
     /// Filter by database types (empty = show all)
     type_filter: std::collections::HashSet<DatabaseType>,
-    /// Context menu state
-    context_menu: Option<Entity<ContextMenu>>,
+    /// Context menu state using gpui-component's PopupMenu
+    context_menu: Option<Entity<PopupMenu>>,
+    /// Position where context menu should appear (window coordinates)
+    context_menu_position: Option<Point<Pixels>>,
+    /// Subscription for context menu dismiss events
+    _context_menu_subscription: Option<Subscription>,
     context_menu_target: Option<ContextMenuTarget>,
     /// Pending database context menu request (conn_id, db_name, position) — processed in render
     pending_db_context_menu: Option<(String, String, Point<Pixels>)>,
@@ -189,6 +191,8 @@ impl Sidebar {
             is_refreshing: false,
             type_filter: std::collections::HashSet::new(),
             context_menu: None,
+            context_menu_position: None,
+            _context_menu_subscription: None,
             context_menu_target: None,
             pending_db_context_menu: None,
             pending_coll_context_menu: None,
@@ -477,96 +481,89 @@ impl Sidebar {
     ) {
         // Dismiss any existing context menu
         self.context_menu = None;
+        self.context_menu_position = None;
+        self._context_menu_subscription = None;
         self.context_menu_target = None;
 
         let conn_name = conn.name.clone();
+        let conn_id = conn.id.clone();
+        let conn_for_edit = conn.clone();
 
-        let mut items = vec![
-            // Properties - opens connection modal with this connection
-            ContextMenuItem {
-                label: "Properties".into(),
-                icon: Some("icons/settings.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Custom("properties".into()),
-            },
-            // Query Console
-            ContextMenuItem {
-                label: "Query Console".into(),
-                icon: Some("icons/terminal.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Custom("query_console".into()),
-            },
-            // Copy connection name
-            ContextMenuItem {
-                label: "Copy".into(),
-                icon: Some("icons/copy.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Copy(conn_name),
-            },
-            // Refresh
-            ContextMenuItem {
-                label: "Refresh".into(),
-                icon: Some("icons/refresh.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Custom("refresh".into()),
-            },
-            // Remove Connection
-            ContextMenuItem {
-                label: "Remove Connection".into(),
-                icon: Some("icons/trash.svg"),
-                style: ContextMenuItemStyle::Danger,
-                action: ContextMenuAction::Custom("remove_connection".into()),
-            },
-        ];
+        // Capture sidebar entity for use in menu item callbacks
+        let sidebar_entity = cx.entity().clone();
 
-        // Drop database - only for connection-level (this drops the whole connection's databases)
-        // Actually "Drop" only appears on database/collection items, not connection-level
-        // But per spec, no "Drop" on connections. We'll skip it here.
-        let _ = &mut items; // suppress unused warning
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            menu.item(
+                PopupMenuItem::new("Properties")
+                    .icon(gpui_component::IconName::Settings)
+                    .on_click({
+                        let conn = conn_for_edit.clone();
+                        let entity = sidebar_entity.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |_, cx| {
+                                cx.emit(EditConnectionRequested(conn.clone()));
+                            });
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("Query Console")
+                    .icon(gpui_component::IconName::SquareTerminal),
+            )
+            .item(
+                PopupMenuItem::new("Copy")
+                    .icon(gpui_component::IconName::Copy)
+                    .on_click({
+                        let name = conn_name.clone();
+                        move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                        }
+                    }),
+            )
+            .item(
+                PopupMenuItem::new("Refresh")
+                    .icon(gpui_component::IconName::Loader)
+                    .on_click({
+                        let entity = sidebar_entity.clone();
+                        let conn_id = conn_id.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |sidebar, cx| {
+                                sidebar.refresh_single_connection(&conn_id, cx);
+                            });
+                        }
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("Remove Connection")
+                    .icon(gpui_component::IconName::Delete)
+                    .on_click({
+                        let entity = sidebar_entity.clone();
+                        let conn_id = conn_id.clone();
+                        move |_, _, cx| {
+                            entity.update(cx, |sidebar, cx| {
+                                sidebar.remove_connection(&conn_id, cx);
+                            });
+                        }
+                    }),
+            )
+        });
 
-        let window_size = window.viewport_size();
-        let menu = cx.new(|cx| ContextMenu::new(items, position, window_size, cx));
-
-        // Subscribe to context menu events
-        let conn_clone = conn.clone();
-        cx.subscribe_in(&menu, window, move |this, _, event: &ContextMenuEvent, _, cx| {
-            match &event.action {
-                ContextMenuAction::Custom(key) => match key.as_ref() {
-                    "properties" => {
-                        cx.emit(EditConnectionRequested(conn_clone.clone()));
-                    }
-                    "query_console" => {
-                        // Not implemented yet
-                    }
-                    "refresh" => {
-                        this.refresh_single_connection(&conn_clone.id, cx);
-                    }
-                    "remove_connection" => {
-                        let id = conn_clone.id.clone();
-                        this.remove_connection(&id, cx);
-                    }
-                    _ => {}
-                },
-                ContextMenuAction::Copy(_) => {
-                    // Already handled by context menu itself (writes to clipboard)
-                }
-            }
+        // Subscribe to dismiss events
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
             this.context_menu = None;
+            this.context_menu_position = None;
+            this._context_menu_subscription = None;
             this.context_menu_target = None;
             cx.notify();
-        })
-        .detach();
+        });
 
-        cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.context_menu = None;
-            this.context_menu_target = None;
-            cx.notify();
-        })
-        .detach();
-
-        menu.focus_handle(cx).focus(window);
+        // Focus the menu
+        menu.read(cx).focus_handle(cx).focus(window);
 
         self.context_menu = Some(menu);
+        self.context_menu_position = Some(position);
+        self._context_menu_subscription = Some(subscription);
         self.context_menu_target = Some(ContextMenuTarget::Connection(conn));
         cx.notify();
     }
@@ -582,104 +579,114 @@ impl Sidebar {
     ) {
         // Dismiss any existing context menu
         self.context_menu = None;
+        self.context_menu_position = None;
+        self._context_menu_subscription = None;
         self.context_menu_target = None;
 
         let copy_text = db_name.clone();
 
-        let items = vec![
-            // Query Console
-            ContextMenuItem {
-                label: "Query Console".into(),
-                icon: Some("icons/terminal.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Custom("query_console".into()),
-            },
-            // Copy database name
-            ContextMenuItem {
-                label: "Copy".into(),
-                icon: Some("icons/copy.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Copy(copy_text),
-            },
-            // Refresh
-            ContextMenuItem {
-                label: "Refresh".into(),
-                icon: Some("icons/refresh.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Custom("refresh".into()),
-            },
-            // Drop database
-            ContextMenuItem {
-                label: "Drop".into(),
-                icon: Some("icons/warning.svg"),
-                style: ContextMenuItemStyle::Danger,
-                action: ContextMenuAction::Custom("drop".into()),
-            },
-        ];
+        // Get connection info for drop operation
+        let conn_info = self
+            .connections
+            .iter()
+            .find(|c| c.id == conn_id)
+            .map(|c| (c.get_connection_string(), c.db_type));
 
-        let window_size = window.viewport_size();
-        let menu = cx.new(|cx| ContextMenu::new(items, position, window_size, cx));
+        // Capture sidebar entity for use in menu item callbacks
+        let sidebar_entity = cx.entity().clone();
 
-        let conn_id_clone = conn_id.clone();
-        let db_name_clone = db_name.clone();
-        cx.subscribe_in(&menu, window, move |this, _, event: &ContextMenuEvent, _, cx| {
-            match &event.action {
-                ContextMenuAction::Custom(key) => match key.as_ref() {
-                    "query_console" => {
-                        // Not implemented yet
-                    }
-                    "refresh" => {
-                        this.refresh_single_connection(&conn_id_clone, cx);
-                    }
-                    "drop" => {
-                        if let Some(conn) = this.connections.iter().find(|c| c.id == conn_id_clone) {
-                            let conn_string = conn.get_connection_string();
-                            let db_type = conn.db_type;
-                            let db_name = db_name_clone.clone();
-                            let conn_id = conn_id_clone.clone();
-                            cx.spawn(async move |this, cx| {
-                                let config = crate::db::driver::ConnectionConfig::new(
-                                    db_type,
-                                    conn_string,
-                                );
-                                let result = async {
-                                    let driver = crate::db::driver::create_connection(config)?;
-                                    driver.drop_database(&db_name).await
-                                }.await;
-                                match result {
-                                    Ok(()) => {
-                                        this.update(cx, |this, cx| {
-                                            this.refresh_single_connection(&conn_id, cx);
+        // Clone values for use after the closure moves them
+        let conn_id_for_target = conn_id.clone();
+        let db_name_for_target = db_name.clone();
+
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            let mut menu = menu
+                .item(
+                    PopupMenuItem::new("Query Console")
+                        .icon(gpui_component::IconName::SquareTerminal),
+                )
+                .item(
+                    PopupMenuItem::new("Copy")
+                        .icon(gpui_component::IconName::Copy)
+                        .on_click({
+                            let text = copy_text.clone();
+                            move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Refresh")
+                        .icon(gpui_component::IconName::Loader)
+                        .on_click({
+                            let entity = sidebar_entity.clone();
+                            let conn_id = conn_id.clone();
+                            move |_, _, cx| {
+                                // Refresh the connection's databases (which will reload collections too)
+                                entity.update(cx, |sidebar, cx| {
+                                    sidebar.refresh_single_connection(&conn_id, cx);
+                                });
+                            }
+                        }),
+                )
+                .separator();
+
+            // Add Drop action if we have connection info
+            if let Some((connection_string, db_type)) = conn_info.clone() {
+                let db_name_for_drop = db_name.clone();
+                let entity = sidebar_entity.clone();
+                let conn_id_for_refresh = conn_id.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("Drop Database")
+                        .icon(gpui_component::IconName::TriangleAlert)
+                        .on_click(move |_, _, cx| {
+                            let connection_string = connection_string.clone();
+                            let db_type = db_type;
+                            let db_name = db_name_for_drop.clone();
+                            let entity = entity.clone();
+                            let conn_id = conn_id_for_refresh.clone();
+                            cx.spawn(async move |cx| {
+                                let config = ConnectionConfig::new(db_type, connection_string);
+                                if let Ok(conn) = create_connection(config) {
+                                    if let Err(e) = conn.drop_database(&db_name).await {
+                                        eprintln!("Failed to drop database {}: {}", db_name, e);
+                                    } else {
+                                        eprintln!("Dropped database: {}", db_name);
+                                        // Refresh the sidebar to reflect the change
+                                        entity.update(cx, |sidebar, cx| {
+                                            sidebar.refresh_single_connection(&conn_id, cx);
                                         }).ok();
                                     }
-                                    Err(e) => {
-                                        eprintln!("Failed to drop database: {}", e);
-                                    }
                                 }
-                            }).detach();
-                        }
-                    }
-                    _ => {}
-                },
-                ContextMenuAction::Copy(_) => {}
+                            })
+                            .detach();
+                        }),
+                );
+            } else {
+                menu = menu.item(
+                    PopupMenuItem::new("Drop Database")
+                        .icon(gpui_component::IconName::TriangleAlert),
+                );
             }
+            menu
+        });
+
+        // Subscribe to dismiss events
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
             this.context_menu = None;
+            this.context_menu_position = None;
+            this._context_menu_subscription = None;
             this.context_menu_target = None;
             cx.notify();
-        })
-        .detach();
+        });
 
-        cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.context_menu = None;
-            this.context_menu_target = None;
-            cx.notify();
-        })
-        .detach();
-
-        menu.focus_handle(cx).focus(window);
+        // Focus the menu
+        menu.read(cx).focus_handle(cx).focus(window);
 
         self.context_menu = Some(menu);
-        self.context_menu_target = Some(ContextMenuTarget::Database(conn_id, db_name));
+        self.context_menu_position = Some(position);
+        self._context_menu_subscription = Some(subscription);
+        self.context_menu_target = Some(ContextMenuTarget::Database(conn_id_for_target, db_name_for_target));
         cx.notify();
     }
 
@@ -695,108 +702,119 @@ impl Sidebar {
     ) {
         // Dismiss any existing context menu
         self.context_menu = None;
+        self.context_menu_position = None;
+        self._context_menu_subscription = None;
         self.context_menu_target = None;
 
         // Copy format: dbname.collection
         let copy_text = format!("{}.{}", db_name, coll_name);
 
-        let items = vec![
-            // Query Console
-            ContextMenuItem {
-                label: "Query Console".into(),
-                icon: Some("icons/terminal.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Custom("query_console".into()),
-            },
-            // Copy full name (dbname.collection)
-            ContextMenuItem {
-                label: "Copy".into(),
-                icon: Some("icons/copy.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Copy(copy_text),
-            },
-            // Refresh parent connection
-            ContextMenuItem {
-                label: "Refresh".into(),
-                icon: Some("icons/refresh.svg"),
-                style: ContextMenuItemStyle::Normal,
-                action: ContextMenuAction::Custom("refresh".into()),
-            },
-            // Drop collection
-            ContextMenuItem {
-                label: "Drop".into(),
-                icon: Some("icons/warning.svg"),
-                style: ContextMenuItemStyle::Danger,
-                action: ContextMenuAction::Custom("drop".into()),
-            },
-        ];
+        // Get connection info for drop operation
+        let conn_info = self
+            .connections
+            .iter()
+            .find(|c| c.id == conn_id)
+            .map(|c| (c.get_connection_string(), c.db_type));
 
-        let window_size = window.viewport_size();
-        let menu = cx.new(|cx| ContextMenu::new(items, position, window_size, cx));
+        // Capture sidebar entity for use in menu item callbacks
+        let sidebar_entity = cx.entity().clone();
 
-        let conn_id_clone = conn_id.clone();
-        let db_name_clone = db_name.clone();
-        let coll_name_clone = coll_name.clone();
-        cx.subscribe_in(&menu, window, move |this, _, event: &ContextMenuEvent, _, cx| {
-            match &event.action {
-                ContextMenuAction::Custom(key) => match key.as_ref() {
-                    "query_console" => {
-                        // Not implemented yet
-                    }
-                    "refresh" => {
-                        this.refresh_single_connection(&conn_id_clone, cx);
-                    }
-                    "drop" => {
-                        if let Some(conn) = this.connections.iter().find(|c| c.id == conn_id_clone) {
-                            let conn_string = conn.get_connection_string();
-                            let db_type = conn.db_type;
-                            let db_name = db_name_clone.clone();
-                            let coll_name = coll_name_clone.clone();
-                            let conn_id = conn_id_clone.clone();
-                            cx.spawn(async move |this, cx| {
-                                let config = crate::db::driver::ConnectionConfig::new(
-                                    db_type,
-                                    conn_string,
-                                );
-                                let result = async {
-                                    let driver = crate::db::driver::create_connection(config)?;
-                                    driver.drop_collection(&db_name, &coll_name).await
-                                }.await;
-                                match result {
-                                    Ok(()) => {
-                                        this.update(cx, |this, cx| {
-                                            this.refresh_single_connection(&conn_id, cx);
+        // Clone values for use after the closure moves them
+        let conn_id_for_target = conn_id.clone();
+        let db_name_for_target = db_name.clone();
+        let coll_name_for_target = coll_name.clone();
+
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            let mut menu = menu
+                .item(
+                    PopupMenuItem::new("Query Console")
+                        .icon(gpui_component::IconName::SquareTerminal),
+                )
+                .item(
+                    PopupMenuItem::new("Copy")
+                        .icon(gpui_component::IconName::Copy)
+                        .on_click({
+                            let text = copy_text.clone();
+                            move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Refresh")
+                        .icon(gpui_component::IconName::Loader)
+                        .on_click({
+                            let entity = sidebar_entity.clone();
+                            let conn_id = conn_id.clone();
+                            move |_, _, cx| {
+                                // Refresh the connection's databases (which will reload collections too)
+                                entity.update(cx, |sidebar, cx| {
+                                    sidebar.refresh_single_connection(&conn_id, cx);
+                                });
+                            }
+                        }),
+                )
+                .separator();
+
+            // Add Drop action if we have connection info
+            if let Some((connection_string, db_type)) = conn_info.clone() {
+                let db_name_for_drop = db_name.clone();
+                let coll_name_for_drop = coll_name.clone();
+                let entity = sidebar_entity.clone();
+                let conn_id_for_refresh = conn_id.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("Drop Collection")
+                        .icon(gpui_component::IconName::TriangleAlert)
+                        .on_click(move |_, _, cx| {
+                            let connection_string = connection_string.clone();
+                            let db_type = db_type;
+                            let db_name = db_name_for_drop.clone();
+                            let coll_name = coll_name_for_drop.clone();
+                            let entity = entity.clone();
+                            let conn_id = conn_id_for_refresh.clone();
+                            cx.spawn(async move |cx| {
+                                let config = ConnectionConfig::new(db_type, connection_string);
+                                if let Ok(conn) = create_connection(config) {
+                                    if let Err(e) = conn.drop_collection(&db_name, &coll_name).await {
+                                        eprintln!("Failed to drop collection {}.{}: {}", db_name, coll_name, e);
+                                    } else {
+                                        eprintln!("Dropped collection: {}.{}", db_name, coll_name);
+                                        // Refresh the sidebar to reflect the change
+                                        entity.update(cx, |sidebar, cx| {
+                                            sidebar.refresh_single_connection(&conn_id, cx);
                                         }).ok();
                                     }
-                                    Err(e) => {
-                                        eprintln!("Failed to drop collection: {}", e);
-                                    }
                                 }
-                            }).detach();
-                        }
-                    }
-                    _ => {}
-                },
-                ContextMenuAction::Copy(_) => {}
+                            })
+                            .detach();
+                        }),
+                );
+            } else {
+                menu = menu.item(
+                    PopupMenuItem::new("Drop Collection")
+                        .icon(gpui_component::IconName::TriangleAlert),
+                );
             }
+            menu
+        });
+
+        // Subscribe to dismiss events
+        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
             this.context_menu = None;
+            this.context_menu_position = None;
+            this._context_menu_subscription = None;
             this.context_menu_target = None;
             cx.notify();
-        })
-        .detach();
+        });
 
-        cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.context_menu = None;
-            this.context_menu_target = None;
-            cx.notify();
-        })
-        .detach();
-
-        menu.focus_handle(cx).focus(window);
+        // Focus the menu
+        menu.read(cx).focus_handle(cx).focus(window);
 
         self.context_menu = Some(menu);
+        self.context_menu_position = Some(position);
+        self._context_menu_subscription = Some(subscription);
         self.context_menu_target =
-            Some(ContextMenuTarget::Collection(conn_id, db_name, coll_name));
+            Some(ContextMenuTarget::Collection(conn_id_for_target, db_name_for_target, coll_name_for_target));
         cx.notify();
     }
 
@@ -1395,7 +1413,24 @@ impl Render for Sidebar {
             )
             // Context menu rendered as deferred overlay at absolute position
             .when_some(context_menu, |el, menu| {
-                el.child(deferred(menu).with_priority(2))
+                if let Some(position) = self.context_menu_position {
+                    el.child(
+                        deferred(
+                            anchored()
+                                .position(position)
+                                .snap_to_window_with_margin(px(8.0))
+                                .anchor(Corner::TopLeft)
+                                .child(
+                                    div()
+                                        .occlude()
+                                        .child(menu)
+                                )
+                        )
+                        .with_priority(2)
+                    )
+                } else {
+                    el.child(deferred(div().occlude().child(menu)).with_priority(2))
+                }
             })
     }
 }
