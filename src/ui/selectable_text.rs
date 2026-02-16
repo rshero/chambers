@@ -334,7 +334,6 @@ impl gpui::Element for SelectableTextAreaElement {
         window.set_focus_handle(&focus_handle, cx);
 
         // Create hitbox for mouse interaction - THIS IS CRITICAL
-        
 
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
@@ -528,13 +527,6 @@ impl SelectableTextAreaElement {
                     entity.update(cx, |this, cx| {
                         if this.selection.pending {
                             this.selection.pending = false;
-
-                            // Copy to clipboard (primary selection on Linux)
-                            if !this.selection.is_empty() {
-                                let text = this.content[this.selection.range()].to_string();
-                                cx.write_to_clipboard(ClipboardItem::new_string(text));
-                            }
-
                             cx.notify();
                         }
                     });
