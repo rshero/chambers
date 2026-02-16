@@ -306,20 +306,13 @@ impl TableDelegate for TableViewDelegate {
         let interaction_state = self.interaction_state.clone();
         let interaction_state_for_right_click = self.interaction_state.clone();
 
+        // Use relative positioning so we can add an absolute overlay for selection
         div()
             .id(SharedString::from(format!("cell-{}-{}", row_ix, col_ix)))
             .size_full()
-            .overflow_hidden()
-            .text_ellipsis()
-            .whitespace_nowrap()
-            .text_color(text_color)
-            .text_size(rems(0.75)) // 12px
-            // Cell selection highlight
-            .when(is_selected, |this| {
-                this.bg(AppColors::bg_cell_selected())
-                    .border_1()
-                    .border_color(AppColors::border_active())
-            })
+            .relative()
+            .flex()
+            .items_center()
             // Track which cell was clicked (for CellClicked event) and select it
             .on_mouse_down(MouseButton::Left, move |_, _, _| {
                 let mut state = interaction_state.borrow_mut();
@@ -328,14 +321,38 @@ impl TableDelegate for TableViewDelegate {
             })
             // Right-click for context menu - capture window position using canvas bounds
             .on_mouse_down(MouseButton::Right, move |_event, window, _| {
-                // event.position is relative to the element, we need window coordinates
-                // The mouse position in the event is already in window coordinates for mouse events
                 let window_position = window.mouse_position();
                 let mut state = interaction_state_for_right_click.borrow_mut();
                 state.pending_context_menu = Some((row_ix, col_ix, window_position));
                 state.right_click_pending = true;
             })
-            .child(value)
+            // Cell selection highlight - absolute overlay extending to cell boundaries
+            // Uses negative insets to extend beyond content padding to cell edges
+            // Default cell padding is: top/bottom=4px, left/right=8px
+            .when(is_selected, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(-4.0)) // Match cell top padding
+                        .left(px(-8.0)) // Match cell left padding
+                        .right(px(-8.0)) // Match cell right padding
+                        .bottom(px(-4.0)) // Match cell bottom padding
+                        .bg(AppColors::bg_cell_selected())
+                        .border_1()
+                        .border_color(AppColors::border_active()),
+                )
+            })
+            // Inner text container with truncation
+            .child(
+                div()
+                    .w_full()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_color(text_color)
+                    .text_size(rems(0.75)) // 12px
+                    .child(value),
+            )
     }
 
     fn render_th(
