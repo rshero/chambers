@@ -13,6 +13,7 @@ use gpui_component::{
 };
 
 use crate::ui::selectable_text::SelectableTextArea;
+use crate::ui::text_input::TextInput;
 use crate::ui::theme::AppColors;
 
 /// Items per page
@@ -160,6 +161,18 @@ pub struct CellContextMenuRequested {
     pub col_name: String,
     pub value: SharedString,
     pub position: Point<Pixels>,
+}
+
+/// Event: filter query submitted (Enter pressed in filter input)
+#[derive(Clone)]
+pub struct FilterQuerySubmitted {
+    pub query: String,
+}
+
+/// Event: sort query submitted (Enter pressed in sort input)
+#[derive(Clone)]
+pub struct SortQuerySubmitted {
+    pub query: String,
 }
 
 // ── Table Delegate ──────────────────────────────────────────────────────
@@ -419,6 +432,10 @@ pub struct TableView {
     json_text_area: Option<Entity<SelectableTextArea>>,
     /// Shared interaction state for tracking cell clicks
     interaction_state: Rc<RefCell<CellInteractionState>>,
+    /// Filter input field
+    filter_input: Option<Entity<TextInput>>,
+    /// Sort input field  
+    sort_input: Option<Entity<TextInput>>,
 }
 
 impl EventEmitter<RowSelected> for TableView {}
@@ -429,6 +446,8 @@ impl EventEmitter<ViewModeChanged> for TableView {}
 impl EventEmitter<HeaderContextMenuRequested> for TableView {}
 impl EventEmitter<ViewDropdownToggled> for TableView {}
 impl EventEmitter<CellContextMenuRequested> for TableView {}
+impl EventEmitter<FilterQuerySubmitted> for TableView {}
+impl EventEmitter<SortQuerySubmitted> for TableView {}
 
 impl TableView {
     pub fn new() -> Self {
@@ -445,6 +464,60 @@ impl TableView {
             raw_json: None,
             json_text_area: None,
             interaction_state: Rc::new(RefCell::new(CellInteractionState::default())),
+            filter_input: None,
+            sort_input: None,
+        }
+    }
+
+    fn ensure_inputs(&mut self, cx: &mut Context<Self>) {
+        if self.filter_input.is_none() {
+            let input = cx.new(|cx| TextInput::new(cx, "{}", "{}").borderless());
+            self.filter_input = Some(input);
+        }
+        if self.sort_input.is_none() {
+            let input = cx.new(|cx| TextInput::new(cx, "{}", "{}").borderless());
+            self.sort_input = Some(input);
+        }
+    }
+
+    /// Update the sort input text (called when sort changes from context menu)
+    pub fn update_sort_input_text(&mut self, cx: &mut Context<Self>) {
+        let sort_text = match (&self.sort_field, &self.sort_direction) {
+            (Some(field), Some(SortDirection::Ascending)) => format!("{{\"{}\": 1}}", field),
+            (Some(field), Some(SortDirection::Descending)) => format!("{{\"{}\": -1}}", field),
+            _ => "{}".to_string(),
+        };
+        if let Some(input) = &self.sort_input {
+            input.update(cx, |input, _| {
+                input.set_text(&sort_text);
+            });
+        }
+    }
+
+    /// Parse a sort query string like {"field": 1} or {"field": -1} and update sort state
+    fn parse_and_set_sort_from_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(query) {
+            if let Some(obj) = value.as_object() {
+                if let Some((field, dir_val)) = obj.iter().next() {
+                    let direction = if dir_val.as_i64() == Some(-1) {
+                        SortDirection::Descending
+                    } else {
+                        SortDirection::Ascending
+                    };
+                    self.sort_field = Some(field.clone());
+                    self.sort_direction = Some(direction);
+                    self.update_delegate(cx);
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        // If empty or "{}", clear sort
+        if query.trim().is_empty() || query.trim() == "{}" {
+            self.sort_field = None;
+            self.sort_direction = None;
+            self.update_delegate(cx);
+            cx.notify();
         }
     }
 
@@ -561,7 +634,12 @@ impl TableView {
 
     #[allow(dead_code)]
     pub fn set_filter_query(&mut self, query: String, cx: &mut Context<Self>) {
-        self.filter_query = query;
+        self.filter_query = query.clone();
+        if let Some(input) = &self.filter_input {
+            input.update(cx, |input, _| {
+                input.set_text(&query);
+            });
+        }
         cx.notify();
     }
 
@@ -573,6 +651,7 @@ impl TableView {
     ) {
         self.sort_field = field;
         self.sort_direction = direction;
+        self.update_sort_input_text(cx);
         self.update_delegate(cx);
         cx.notify();
     }
@@ -694,20 +773,13 @@ impl TableView {
 
     // ── Toolbar ─────────────────────────────────────────────────────────
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let filter_display = if self.filter_query.is_empty() {
-            "{}".to_string()
-        } else {
-            self.filter_query.clone()
-        };
+    fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_inputs(cx);
 
-        let sort_display = match (&self.sort_field, &self.sort_direction) {
-            (Some(field), Some(SortDirection::Ascending)) => format!("{{\"{}\": 1}}", field),
-            (Some(field), Some(SortDirection::Descending)) => format!("{{\"{}\": -1}}", field),
-            _ => "{}".to_string(),
-        };
-
+        let filter_input = self.filter_input.clone().unwrap();
+        let sort_input = self.sort_input.clone().unwrap();
         let current_view = self.view_mode;
+        let has_sort = self.sort_field.is_some();
 
         div()
             .id("table-toolbar")
@@ -728,71 +800,78 @@ impl TableView {
                     .flex_row()
                     .items_center()
                     .gap(rems(1.25)) // 20px
+                    .flex_1()
+                    .min_w_0()
                     // Filter
                     .child(
                         div()
-                            .id("filter-display")
+                            .id("filter-input-wrapper")
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(rems(0.375)) // 6px
-                            .px(rems(0.5)) // 8px
-                            .py(rems(0.25)) // 4px
-                            .rounded(px(4.0)) // Keep border radius as px
-                            .cursor_pointer()
-                            .hover(|s| s.bg(AppColors::bg_hover()))
+                            .flex_1()
+                            .min_w_0()
+                            .max_w(rems(18.75)) // 300px
+                            .on_key_down(cx.listener({
+                                let filter_input = filter_input.clone();
+                                move |this, event: &KeyDownEvent, _, cx| {
+                                    if event.keystroke.key == "enter" {
+                                        let query = filter_input.read(cx).text();
+                                        this.filter_query = query.clone();
+                                        cx.emit(FilterQuerySubmitted { query });
+                                    }
+                                }
+                            }))
                             .child(
                                 div()
                                     .text_size(rems(0.75)) // 12px
                                     .text_color(AppColors::text_dim())
+                                    .flex_none()
                                     .child("Filter:"),
                             )
-                            .child(
-                                div()
-                                    .text_size(rems(0.75)) // 12px
-                                    .font_family("monospace")
-                                    .text_color(AppColors::text_secondary())
-                                    .child(filter_display),
-                            ),
+                            .child(div().flex_1().min_w_0().child(filter_input)),
                     )
-                    // Sort with clear button
+                    // Sort
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(rems(0.25)) // 4px
+                            .gap(rems(0.375)) // 6px
+                            .flex_1()
+                            .min_w_0()
+                            .max_w(rems(18.75)) // 300px
                             .child(
                                 div()
-                                    .id("sort-display")
+                                    .id("sort-input-wrapper")
                                     .flex()
                                     .flex_row()
                                     .items_center()
                                     .gap(rems(0.375)) // 6px
-                                    .px(rems(0.5)) // 8px
-                                    .py(rems(0.25)) // 4px
-                                    .rounded(px(4.0)) // Keep border radius as px
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(AppColors::bg_hover()))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .on_key_down(cx.listener({
+                                        let sort_input = sort_input.clone();
+                                        move |this, event: &KeyDownEvent, _, cx| {
+                                            if event.keystroke.key == "enter" {
+                                                let query = sort_input.read(cx).text();
+                                                // Try to parse the sort query to update visual state
+                                                this.parse_and_set_sort_from_query(&query, cx);
+                                                cx.emit(SortQuerySubmitted { query });
+                                            }
+                                        }
+                                    }))
                                     .child(
                                         div()
                                             .text_size(rems(0.75)) // 12px
                                             .text_color(AppColors::text_dim())
+                                            .flex_none()
                                             .child("Sort:"),
                                     )
-                                    .child(
-                                        div()
-                                            .text_size(rems(0.75)) // 12px
-                                            .font_family("monospace")
-                                            .text_color(if self.sort_field.is_some() {
-                                                AppColors::accent()
-                                            } else {
-                                                AppColors::text_secondary()
-                                            })
-                                            .child(sort_display),
-                                    ),
+                                    .child(div().flex_1().min_w_0().child(sort_input)),
                             )
-                            .when(self.sort_field.is_some(), |el| {
+                            .when(has_sort, |el| {
                                 el.child(
                                     div()
                                         .id("clear-sort")
@@ -800,12 +879,14 @@ impl TableView {
                                         .items_center()
                                         .justify_center()
                                         .size(rems(1.125)) // 18px
-                                        .rounded(px(3.0)) // Keep border radius as px
+                                        .rounded(px(3.0))
                                         .cursor_pointer()
+                                        .flex_none()
                                         .hover(|s| s.bg(AppColors::bg_hover()))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.sort_field = None;
                                             this.sort_direction = None;
+                                            this.update_sort_input_text(cx);
                                             cx.emit(SortChangeRequested {
                                                 field: String::new(),
                                                 direction: SortDirection::Ascending,
@@ -832,8 +913,9 @@ impl TableView {
                     .gap(rems(0.25)) // 4px
                     .px(rems(0.625)) // 10px
                     .py(rems(0.3125)) // 5px
-                    .rounded(px(4.0)) // Keep border radius as px
+                    .rounded(px(4.0))
                     .cursor_pointer()
+                    .flex_none()
                     .bg(AppColors::bg_active())
                     .border_1()
                     .border_color(AppColors::border())

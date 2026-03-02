@@ -7,9 +7,9 @@ use crate::db::driver::{create_connection, ConnectionConfig};
 use crate::db::DatabaseType;
 use crate::ui::selectable_text::SelectableTextArea;
 use crate::ui::table_view::{
-    CellContextMenuRequested, CellDoubleClicked, Column, HeaderContextMenuRequested,
-    PageChangeRequested, Row, SortChangeRequested, SortDirection, TableView, ViewDropdownToggled,
-    ViewMode, ViewModeChanged, PAGE_SIZE,
+    CellContextMenuRequested, CellDoubleClicked, Column, FilterQuerySubmitted,
+    HeaderContextMenuRequested, PageChangeRequested, Row, SortChangeRequested, SortDirection,
+    SortQuerySubmitted, TableView, ViewDropdownToggled, ViewMode, ViewModeChanged, PAGE_SIZE,
 };
 use crate::ui::theme::AppColors;
 
@@ -146,6 +146,37 @@ impl CollectionView {
         })
         .detach();
 
+        cx.subscribe(&table_view, |this, _, event: &FilterQuerySubmitted, cx| {
+            this.filter_query = event.query.clone();
+            this.current_page = 0;
+            this.load_documents(cx);
+        })
+        .detach();
+
+        cx.subscribe(&table_view, |this, _, event: &SortQuerySubmitted, cx| {
+            // Parse the sort query to update our local state
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&event.query) {
+                if let Some(obj) = value.as_object() {
+                    if let Some((field, dir_val)) = obj.iter().next() {
+                        let direction = if dir_val.as_i64() == Some(-1) {
+                            SortDirection::Descending
+                        } else {
+                            SortDirection::Ascending
+                        };
+                        this.sort_field = Some(field.clone());
+                        this.sort_direction = Some(direction);
+                    }
+                }
+            }
+            if event.query.trim().is_empty() || event.query.trim() == "{}" {
+                this.sort_field = None;
+                this.sort_direction = None;
+            }
+            this.current_page = 0;
+            this.load_documents(cx);
+        })
+        .detach();
+
         let mut view = Self {
             collection_name,
             database_name,
@@ -237,6 +268,8 @@ impl CollectionView {
         let col_name_for_copy = col_name.clone();
         let table_view = self.table_view.clone();
         let table_view_for_desc = self.table_view.clone();
+        let view_entity = cx.entity().clone();
+        let view_entity_for_desc = cx.entity().clone();
 
         let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
             menu.item(
@@ -256,9 +289,16 @@ impl CollectionView {
                     .on_click({
                         let col_name = col_name_for_asc.clone();
                         let table_view = table_view.clone();
+                        let entity = view_entity.clone();
                         move |_, _, cx| {
                             table_view.update(cx, |table, cx| {
                                 table.set_sort(Some(col_name.clone()), Some(SortDirection::Ascending), cx);
+                            });
+                            entity.update(cx, |this, cx| {
+                                this.sort_field = Some(col_name.clone());
+                                this.sort_direction = Some(SortDirection::Ascending);
+                                this.current_page = 0;
+                                this.load_documents(cx);
                             });
                         }
                     }),
@@ -269,9 +309,16 @@ impl CollectionView {
                     .on_click({
                         let col_name = col_name_for_desc.clone();
                         let table_view = table_view_for_desc.clone();
+                        let entity = view_entity_for_desc.clone();
                         move |_, _, cx| {
                             table_view.update(cx, |table, cx| {
                                 table.set_sort(Some(col_name.clone()), Some(SortDirection::Descending), cx);
+                            });
+                            entity.update(cx, |this, cx| {
+                                this.sort_field = Some(col_name.clone());
+                                this.sort_direction = Some(SortDirection::Descending);
+                                this.current_page = 0;
+                                this.load_documents(cx);
                             });
                         }
                     }),
@@ -443,6 +490,12 @@ impl CollectionView {
         let coll_name = self.collection_name.clone();
         let offset = self.current_page * PAGE_SIZE;
         let limit = PAGE_SIZE as u32;
+        let filter_str = if self.filter_query.is_empty() { None } else { Some(self.filter_query.clone()) };
+        let sort_str = match (&self.sort_field, &self.sort_direction) {
+            (Some(field), Some(SortDirection::Ascending)) => Some(format!("{{\"{}\": 1}}", field)),
+            (Some(field), Some(SortDirection::Descending)) => Some(format!("{{\"{}\": -1}}", field)),
+            _ => None,
+        };
 
         let config = ConnectionConfig::new(DatabaseType::MongoDB, conn_string);
 
@@ -456,11 +509,11 @@ impl CollectionView {
                     Ok(conn) => {
                         // Get documents for current page
                         let docs = conn
-                            .query_documents(&db_name, &coll_name, limit, offset as u32)
+                            .query_documents(&db_name, &coll_name, limit, offset as u32, filter_str.as_deref(), sort_str.as_deref())
                             .await?;
 
                         // Get total count
-                        let count = conn.count_documents(&db_name, &coll_name).await?;
+                        let count = conn.count_documents(&db_name, &coll_name, filter_str.as_deref()).await?;
 
                         Ok((docs, count))
                     }

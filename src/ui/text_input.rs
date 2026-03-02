@@ -79,6 +79,8 @@ pub struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     is_password: bool,
+    /// Render without background/border (inline style for toolbars)
+    is_borderless: bool,
     /// Horizontal scroll offset for text that overflows the input width.
     /// This is a positive value representing how many pixels the text is scrolled to the left.
     scroll_offset: Pixels,
@@ -98,6 +100,7 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             is_password: false,
+            is_borderless: false,
             scroll_offset: px(0.),
         }
     }
@@ -107,7 +110,11 @@ impl TextInput {
         self
     }
 
-    #[allow(dead_code)]
+    pub fn borderless(mut self) -> Self {
+        self.is_borderless = true;
+        self
+    }
+
     pub fn text(&self) -> String {
         self.content.to_string()
     }
@@ -782,11 +789,19 @@ impl gpui::Element for TextElement {
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_focused = self.focus_handle.is_focused(_window);
-        let input_bg = rgb(0x252525);
-        let input_border = if is_focused {
-            rgb(0x0078d4)
+        let is_borderless = self.is_borderless;
+
+        let input_bg = if is_borderless {
+            gpui::transparent_black()
         } else {
-            rgb(0x3a3a3a)
+            rgb(0x252525).into()
+        };
+        let input_border = if is_borderless {
+            gpui::transparent_black()
+        } else if is_focused {
+            rgb(0x0078d4).into()
+        } else {
+            rgb(0x3a3a3a).into()
         };
 
         div()
@@ -818,8 +833,8 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .px(rems(0.625)) // 10px
-            .py(rems(0.5)) // 8px
+            .when(is_borderless, |el| el.px(rems(0.25)).py(rems(0.125)))
+            .when(!is_borderless, |el| el.px(rems(0.625)).py(rems(0.5)))
             .bg(input_bg)
             .border_1()
             .border_color(input_border)

@@ -54,8 +54,10 @@ pub trait DatabaseConnection: Send + Sync {
         collection_name: &str,
         limit: u32,
         skip: u32,
+        filter: Option<&str>,
+        sort: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
-        let _ = (database_name, collection_name, limit, skip);
+        let _ = (database_name, collection_name, limit, skip, filter, sort);
         Ok(Vec::new())
     }
 
@@ -65,8 +67,9 @@ pub trait DatabaseConnection: Send + Sync {
         &self,
         database_name: &str,
         collection_name: &str,
+        filter: Option<&str>,
     ) -> Result<usize> {
-        let _ = (database_name, collection_name);
+        let _ = (database_name, collection_name, filter);
         Ok(0)
     }
 

@@ -8,6 +8,22 @@ use std::time::Instant;
 use crate::db::driver::{CollectionInfo, ConnectionConfig, ConnectionInfo, DatabaseConnection, DatabaseInfo};
 use crate::db::error::{ConnectionError, Result};
 
+/// Parse a JSON string into a BSON Document. Returns empty document on failure.
+fn parse_json_to_document(json_str: Option<&str>) -> Document {
+    match json_str {
+        Some(s) if !s.is_empty() && s != "{}" => {
+            serde_json::from_str::<serde_json::Value>(s)
+                .ok()
+                .and_then(|v| {
+                    let bson = mongodb::bson::to_bson(&v).ok()?;
+                    bson.as_document().cloned()
+                })
+                .unwrap_or_else(Document::new)
+        }
+        _ => Document::new(),
+    }
+}
+
 pub struct MongoConnection {
     config: ConnectionConfig,
 }
@@ -156,6 +172,8 @@ impl DatabaseConnection for MongoConnection {
         collection_name: &str,
         limit: u32,
         skip: u32,
+        filter: Option<&str>,
+        sort: Option<&str>,
     ) -> Result<Vec<serde_json::Value>> {
         // Parse connection string
         let mut client_options = tokio::time::timeout(
@@ -175,16 +193,21 @@ impl DatabaseConnection for MongoConnection {
         let db = client.database(database_name);
         let collection = db.collection::<Document>(collection_name);
 
+        // Parse filter and sort
+        let filter_doc = parse_json_to_document(filter);
+        let sort_doc = parse_json_to_document(sort);
+
         // Build find options
         let find_options = mongodb::options::FindOptions::builder()
             .limit(Some(limit as i64))
             .skip(Some(skip as u64))
+            .sort(if sort_doc.is_empty() { None } else { Some(sort_doc) })
             .build();
 
         // Execute query
         let mut cursor = tokio::time::timeout(
             self.config.timeout,
-            collection.find(Document::new()).with_options(find_options),
+            collection.find(filter_doc).with_options(find_options),
         )
         .await
         .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
@@ -212,6 +235,7 @@ impl DatabaseConnection for MongoConnection {
         &self,
         database_name: &str,
         collection_name: &str,
+        filter: Option<&str>,
     ) -> Result<usize> {
         // Parse connection string
         let mut client_options = tokio::time::timeout(
@@ -231,9 +255,12 @@ impl DatabaseConnection for MongoConnection {
         let db = client.database(database_name);
         let collection = db.collection::<Document>(collection_name);
 
+        // Parse filter
+        let filter_doc = parse_json_to_document(filter);
+
         let count = tokio::time::timeout(
             self.config.timeout,
-            collection.count_documents(Document::new()),
+            collection.count_documents(filter_doc),
         )
         .await
         .map_err(|_| ConnectionError::Timeout(self.config.timeout))?
