@@ -146,10 +146,9 @@ pub struct HeaderContextMenuRequested {
     pub position: Point<Pixels>,
 }
 
-/// Event: view dropdown toggled, bubble to parent
+/// Event: view dropdown toggle requested, bubble to parent
 #[derive(Clone)]
 pub struct ViewDropdownToggled {
-    pub open: bool,
     pub view_mode: ViewMode,
 }
 
@@ -922,7 +921,6 @@ impl TableView {
                     .hover(|s| s.bg(AppColors::bg_hover()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ViewDropdownToggled {
-                            open: true,
                             view_mode: this.view_mode,
                         });
                     }))

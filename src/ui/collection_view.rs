@@ -65,6 +65,8 @@ pub struct CollectionView {
     pending_cell_ctx_menu: Option<PendingCellContextMenu>,
     /// View dropdown open state
     view_dropdown_open: bool,
+    /// Timestamp of last dropdown dismiss (for toggle debounce)
+    last_view_dropdown_dismiss: Option<std::time::Instant>,
     /// Current view mode (tracked here for dropdown rendering)
     current_view_mode: ViewMode,
 }
@@ -127,7 +129,26 @@ impl CollectionView {
         .detach();
 
         cx.subscribe(&table_view, |this, _, event: &ViewDropdownToggled, cx| {
-            this.view_dropdown_open = event.open;
+            // Toggle: if already open, close it
+            if this.view_dropdown_open {
+                this.view_dropdown_open = false;
+                this.last_view_dropdown_dismiss = Some(std::time::Instant::now());
+                cx.notify();
+                return;
+            }
+
+            // Check if we just dismissed (within 100ms) — the backdrop's mouse_down
+            // fires before the trigger's click in the same gesture
+            if let Some(dismiss_time) = this.last_view_dropdown_dismiss {
+                if dismiss_time.elapsed() < std::time::Duration::from_millis(100) {
+                    this.last_view_dropdown_dismiss = None;
+                    cx.notify();
+                    return;
+                }
+            }
+            this.last_view_dropdown_dismiss = None;
+
+            this.view_dropdown_open = true;
             this.current_view_mode = event.view_mode;
             cx.notify();
         })
@@ -198,6 +219,7 @@ impl CollectionView {
             pending_header_ctx_menu: None,
             pending_cell_ctx_menu: None,
             view_dropdown_open: false,
+            last_view_dropdown_dismiss: None,
             current_view_mode: ViewMode::Table,
         };
 
@@ -476,6 +498,7 @@ impl CollectionView {
     /// Close view dropdown
     fn close_view_dropdown(&mut self, cx: &mut Context<Self>) {
         self.view_dropdown_open = false;
+        self.last_view_dropdown_dismiss = Some(std::time::Instant::now());
         cx.notify();
     }
 
@@ -1009,14 +1032,145 @@ impl Render for CollectionView {
                     .size_full()
                     .bg(AppColors::bg_main())
                     .relative()
-                    // Table view
+                    // Table view (relative so the view dropdown anchors here, not the full container)
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .h_full()
                             .overflow_hidden()
-                            .child(self.table_view.clone()),
+                            .relative()
+                            .child(self.table_view.clone())
+                            // View dropdown overlay (anchored to table area, not full container)
+                            .when(view_dropdown_open, |el| {
+                                el.child(
+                                    div()
+                                        .id("view-dropdown-backdrop")
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.close_view_dropdown(cx);
+                                        }))
+                                        .child(
+                                            div()
+                                                .id("view-dropdown-menu")
+                                                .absolute()
+                                                .top(rems(2.375)) // toolbar height + small offset
+                                                .right(rems(0.875)) // align with switcher button
+                                                .occlude()
+                                                .min_w(rems(6.875)) // 110px
+                                                .bg(AppColors::menu_bg())
+                                                .border_1()
+                                                .border_color(AppColors::border())
+                                                .rounded(px(4.0))
+                                                .shadow_lg()
+                                                .py(rems(0.25)) // 4px
+                                                .child(
+                                                    div()
+                                                        .id("view-table")
+                                                        .px(rems(0.75))
+                                                        .py(rems(0.375))
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.bg(AppColors::menu_hover()))
+                                                        .on_click({
+                                                            let table_view = table_view.clone();
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                table_view.update(cx, |t, cx| {
+                                                                    t.set_view_mode(ViewMode::Table, cx);
+                                                                });
+                                                                this.view_dropdown_open = false;
+                                                                this.current_view_mode = ViewMode::Table;
+                                                                cx.notify();
+                                                            })
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .gap(rems(0.5))
+                                                                .child(
+                                                                    svg()
+                                                                        .path("icons/table.svg")
+                                                                        .size(rems(0.875))
+                                                                        .text_color(
+                                                                            if current_view_mode == ViewMode::Table {
+                                                                                AppColors::accent()
+                                                                            } else {
+                                                                                AppColors::text_dim()
+                                                                            },
+                                                                        ),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(rems(0.75))
+                                                                        .text_color(
+                                                                            if current_view_mode == ViewMode::Table {
+                                                                                AppColors::accent()
+                                                                            } else {
+                                                                                AppColors::text_secondary()
+                                                                            },
+                                                                        )
+                                                                        .child("Table"),
+                                                                ),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("view-json")
+                                                        .px(rems(0.75))
+                                                        .py(rems(0.375))
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.bg(AppColors::menu_hover()))
+                                                        .on_click({
+                                                            let table_view = table_view.clone();
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                table_view.update(cx, |t, cx| {
+                                                                    t.set_view_mode(ViewMode::Json, cx);
+                                                                });
+                                                                this.view_dropdown_open = false;
+                                                                this.current_view_mode = ViewMode::Json;
+                                                                cx.notify();
+                                                            })
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .gap(rems(0.5))
+                                                                .child(
+                                                                    svg()
+                                                                        .path("icons/code.svg")
+                                                                        .size(rems(0.875))
+                                                                        .text_color(
+                                                                            if current_view_mode == ViewMode::Json {
+                                                                                AppColors::accent()
+                                                                            } else {
+                                                                                AppColors::text_dim()
+                                                                            },
+                                                                        ),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(rems(0.75))
+                                                                        .text_color(
+                                                                            if current_view_mode == ViewMode::Json {
+                                                                                AppColors::accent()
+                                                                            } else {
+                                                                                AppColors::text_secondary()
+                                                                            },
+                                                                        )
+                                                                        .child("JSON"),
+                                                                ),
+                                                        ),
+                                                ),
+                                        ),
+                                )
+                            }),
                     )
                     // Detail panel
                     .when(has_detail, |el| {
@@ -1104,144 +1258,6 @@ impl Render for CollectionView {
                                         .when_some(detail_text_area, |el, text_area| {
                                             el.child(text_area)
                                         }),
-                                ),
-                        )
-                    })
-                    // View dropdown overlay (rendered here, outside overflow_hidden)
-                    .when(view_dropdown_open, |el| {
-                        el.child(
-                            div()
-                                .id("view-dropdown-backdrop")
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                    this.close_view_dropdown(cx);
-                                }))
-                                .child(
-                                    div()
-                                        .id("view-dropdown-menu")
-                                        .absolute()
-                                        .top(rems(2.375)) // 38px - toolbar height + small offset
-                                        .right(rems(0.875)) // 14px
-                                        .occlude()
-                                        .min_w(rems(6.875)) // 110px
-                                        .bg(AppColors::menu_bg())
-                                        .border_1()
-                                        .border_color(AppColors::border())
-                                        .rounded(px(4.0)) // Keep border radius as px
-                                        .shadow_lg()
-                                        .py(rems(0.25)) // 4px
-                                        .child(
-                                            div()
-                                                .id("view-table")
-                                                .px(rems(0.75)) // 12px
-                                                .py(rems(0.375)) // 6px
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(AppColors::menu_hover()))
-                                                .on_click({
-                                                    let table_view = table_view.clone();
-                                                    cx.listener(move |this, _, _, cx| {
-                                                        table_view.update(cx, |t, cx| {
-                                                            t.set_view_mode(ViewMode::Table, cx);
-                                                        });
-                                                        this.view_dropdown_open = false;
-                                                        this.current_view_mode = ViewMode::Table;
-                                                        cx.notify();
-                                                    })
-                                                })
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .gap(rems(0.5)) // 8px
-                                                        .child(
-                                                            svg()
-                                                                .path("icons/table.svg")
-                                                                .size(rems(0.875)) // 14px
-                                                                .text_color(
-                                                                    if current_view_mode
-                                                                        == ViewMode::Table
-                                                                    {
-                                                                        AppColors::accent()
-                                                                    } else {
-                                                                        AppColors::text_dim()
-                                                                    },
-                                                                ),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(0.75)) // 12px
-                                                                .text_color(
-                                                                    if current_view_mode
-                                                                        == ViewMode::Table
-                                                                    {
-                                                                        AppColors::accent()
-                                                                    } else {
-                                                                        AppColors::text_secondary()
-                                                                    },
-                                                                )
-                                                                .child("Table"),
-                                                        ),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("view-json")
-                                                .px(rems(0.75)) // 12px
-                                                .py(rems(0.375)) // 6px
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(AppColors::menu_hover()))
-                                                .on_click({
-                                                    let table_view = table_view.clone();
-                                                    cx.listener(move |this, _, _, cx| {
-                                                        table_view.update(cx, |t, cx| {
-                                                            t.set_view_mode(ViewMode::Json, cx);
-                                                        });
-                                                        this.view_dropdown_open = false;
-                                                        this.current_view_mode = ViewMode::Json;
-                                                        cx.notify();
-                                                    })
-                                                })
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_row()
-                                                        .items_center()
-                                                        .gap(rems(0.5)) // 8px
-                                                        .child(
-                                                            svg()
-                                                                .path("icons/code.svg")
-                                                                .size(rems(0.875)) // 14px
-                                                                .text_color(
-                                                                    if current_view_mode
-                                                                        == ViewMode::Json
-                                                                    {
-                                                                        AppColors::accent()
-                                                                    } else {
-                                                                        AppColors::text_dim()
-                                                                    },
-                                                                ),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(0.75)) // 12px
-                                                                .text_color(
-                                                                    if current_view_mode
-                                                                        == ViewMode::Json
-                                                                    {
-                                                                        AppColors::accent()
-                                                                    } else {
-                                                                        AppColors::text_secondary()
-                                                                    },
-                                                                )
-                                                                .child("JSON"),
-                                                        ),
-                                                ),
-                                        ),
                                 ),
                         )
                     })
